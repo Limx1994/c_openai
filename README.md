@@ -56,6 +56,25 @@ cmake ..
 make
 ```
 
+### lwIP Backend (for embedded/MCU)
+
+The lwIP backend supports both HTTP and HTTPS:
+- **HTTP**: Plain TCP socket, no TLS overhead
+- **HTTPS**: Uses ALTCP + mbedTLS for encrypted connections
+
+For HTTPS with lwIP, ensure these are enabled in your `lwipopts.h`:
+```c
+#define LWIP_ALTCP             1
+#define LWIP_ALTCP_TLS         1
+#define LWIP_ALTCP_TLS_MBEDTLS 1
+```
+
+Then configure in `openai_config.h`:
+```c
+#define OPENAI_USE_TLS 1          // Enable TLS
+#define OPENAI_TLS_CERT_VERIFY 0  // 0=skip cert verify for testing
+```
+
 ### Build with lwIP (for embedded/MCU)
 
 ```bash
@@ -87,6 +106,8 @@ Edit `include/openai_config.h` to customize:
 #define OPENAI_BUFFER_SIZE 4096
 #define OPENAI_MAX_RETRIES 3
 #define OPENAI_TIMEOUT 30
+#define OPENAI_USE_TLS 1       // for lwIP HTTPS (requires mbedTLS)
+#define OPENAI_TLS_CERT_VERIFY 0
 ```
 
 ## Usage
@@ -203,6 +224,12 @@ pacman -S mingw-w64-x86_64-curl
 2. Configure `OPENAI_HTTP_BACKEND=OPENAI_BACKEND_LWIP`
 3. Ensure `OPENAI_USE_MALLOC=0` for no-malloc mode
 4. Port the cJSON library to your platform
+5. For HTTPS support, enable ALTCP + mbedTLS in `lwipopts.h`:
+   ```c
+   #define LWIP_ALTCP             1
+   #define LWIP_ALTCP_TLS         1
+   #define LWIP_ALTCP_TLS_MBEDTLS 1
+   ```
 
 ## License
 

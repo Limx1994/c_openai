@@ -56,6 +56,25 @@ cmake ..
 make
 ```
 
+### lwIP 后端（用于嵌入式/MCU）
+
+lwIP 后端同时支持 HTTP 和 HTTPS：
+- **HTTP**：纯 TCP socket，无 TLS 开销
+- **HTTPS**：使用 ALTCP + mbedTLS 实现加密连接
+
+使用 HTTPS 时，需在 `lwipopts.h` 中启用：
+```c
+#define LWIP_ALTCP             1
+#define LWIP_ALTCP_TLS         1
+#define LWIP_ALTCP_TLS_MBEDTLS 1
+```
+
+并在 `openai_config.h` 中配置：
+```c
+#define OPENAI_USE_TLS 1          // 启用 TLS
+#define OPENAI_TLS_CERT_VERIFY 0  // 0=跳过证书验证（测试用）
+```
+
 ### 使用 lwIP 构建（用于嵌入式/MCU）
 
 ```bash
@@ -87,6 +106,8 @@ make
 #define OPENAI_BUFFER_SIZE 4096
 #define OPENAI_MAX_RETRIES 3
 #define OPENAI_TIMEOUT 30
+#define OPENAI_USE_TLS 1       // lwIP HTTPS（需要 mbedTLS）
+#define OPENAI_TLS_CERT_VERIFY 0
 ```
 
 ## 使用方法
@@ -203,6 +224,12 @@ pacman -S mingw-w64-x86_64-curl
 2. 配置 `OPENAI_HTTP_BACKEND=OPENAI_BACKEND_LWIP`
 3. 确保 `OPENAI_USE_MALLOC=0` 以启用无 malloc 模式
 4. 将 cJSON 库移植到目标平台
+5. 如需 HTTPS 支持，在 `lwipopts.h` 中启用 ALTCP + mbedTLS：
+   ```c
+   #define LWIP_ALTCP             1
+   #define LWIP_ALTCP_TLS         1
+   #define LWIP_ALTCP_TLS_MBEDTLS 1
+   ```
 
 ## 许可证
 

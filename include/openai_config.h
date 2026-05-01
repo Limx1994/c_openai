@@ -31,6 +31,15 @@
 /* API Base URL */
 #define OPENAI_API_BASE "https://api.openai.com/v1"
 
+/* TLS settings (for lwIP backend) */
+#ifndef OPENAI_USE_TLS
+#define OPENAI_USE_TLS 1
+#endif
+
+#ifndef OPENAI_TLS_CERT_VERIFY
+#define OPENAI_TLS_CERT_VERIFY 0  /* 0=skip cert verify, 1=verify CA cert */
+#endif
+
 /* Version */
 #define OPENAI_VERSION "1.0.0"
 
