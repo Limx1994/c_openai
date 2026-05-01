@@ -32,6 +32,10 @@ c_openai/
 │   ├── openai_json.c     # JSON 工具
 │   └── openai_error.c    # 错误处理
 ├── cJSON/                # JSON 解析器（cJSON 库）
+├── third_party/          # 第三方库
+│   ├── lwip/             # lwIP TCP/IP 协议栈（git submodule）
+│   ├── mbedtls/          # mbedTLS 加密库（git submodule）
+│   └── CMakeLists.txt    # 第三方库构建配置
 ├── example/              # 示例代码
 │   └── chat_example.c
 ├── CMakeLists.txt        # 构建配置
@@ -45,8 +49,9 @@ c_openai/
 ### 前置条件
 
 - CMake 3.10 或更高
+- Git（支持子模块）
 - libcurl 后端：libcurl 开发文件
-- lwIP 后端：lwIP 套接字 API
+- lwIP 后端：git 子模块（自动获取）
 
 ### 使用 libcurl 构建（默认，用于 PC/服务器）
 
@@ -61,6 +66,13 @@ make
 lwIP 后端同时支持 HTTP 和 HTTPS：
 - **HTTP**：纯 TCP socket，无 TLS 开销
 - **HTTPS**：使用 ALTCP + mbedTLS 实现加密连接
+
+**重要**：lwIP 和 mbedTLS 通过 git submodule 集成，克隆时需：
+```bash
+git clone --recursive https://github.com/Limx1994/c_openai.git
+# 或如果已经克隆：
+git submodule update --init --recursive
+```
 
 使用 HTTPS 时，需在 `lwipopts.h` 中启用：
 ```c
