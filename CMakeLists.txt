@@ -18,6 +18,14 @@ if(OPENAI_BUILD_EXAMPLES)
     add_subdirectory(example)
 endif()
 
+# Third-party libraries for lwIP backend
+if(OPENAI_HTTP_BACKEND EQUAL OPENAI_BACKEND_LWIP)
+    if(NOT EXISTS ${CMAKE_SOURCE_DIR}/third_party/lwip/src/include/lwip/opt.h)
+        message(FATAL_ERROR "lwIP submodule not found. Run: git submodule update --init --recursive")
+    endif()
+    add_subdirectory(third_party)
+endif()
+
 # Main library
 add_library(openai INTERFACE)
 target_include_directories(openai INTERFACE

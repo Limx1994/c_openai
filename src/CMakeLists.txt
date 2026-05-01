@@ -13,6 +13,8 @@ target_include_directories(openai_client PUBLIC
 if(OPENAI_HTTP_BACKEND EQUAL OPENAI_BACKEND_LWIP)
     target_compile_definitions(openai_client PUBLIC OPENAI_USE_LWIP=1)
     target_sources(openai_client PRIVATE openai_http_lwip.c)
+    # Link lwIP and mbedTLS for TLS support
+    target_link_libraries(openai_client PUBLIC lwip mbedtls)
 else()
     find_package(CURL REQUIRED)
     target_link_libraries(openai_client CURL::libcurl)
