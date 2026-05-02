@@ -33,6 +33,7 @@ c_openai/
 │   └── openai_error.c    # Error handling
 ├── cJSON/                # JSON parser (cJSON library)
 ├── third_party/          # Third-party libraries
+│   ├── libcurl/          # libcurl HTTP library (git submodule)
 │   ├── lwip/             # lwIP TCP/IP stack (git submodule)
 │   ├── mbedtls/          # mbedTLS library (git submodule)
 │   └── CMakeLists.txt    # Third-party build config
@@ -50,8 +51,7 @@ c_openai/
 
 - CMake 3.10 or higher
 - Git (with submodule support)
-- For libcurl backend: libcurl development files
-- For lwIP backend: git submodules (automatically fetched)
+- All dependencies included as git submodules (libcurl, lwIP, mbedtls)
 
 ### Build with libcurl (default, for PC/Server)
 
@@ -219,15 +219,21 @@ Error codes:
 
 ### Linux/Raspberry Pi
 
-Install libcurl development package:
+All dependencies are included as git submodules. Clone with:
 ```bash
-sudo apt-get install libcurl4-openssl-dev
+git clone --recursive https://github.com/Limx1994/c_openai.git
+# Or if already cloned:
+git submodule update --init --recursive
 ```
 
 ### Windows (MSYS2/MinGW)
 
 ```bash
-pacman -S mingw-w64-x86_64-curl
+git clone --recursive https://github.com/Limx1994/c_openai.git
+cd c_openai
+mkdir build && cd build
+cmake .. -G "MSYS Makefiles"
+make
 ```
 
 ### STM32/Embedded

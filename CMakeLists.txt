@@ -33,20 +33,13 @@ target_include_directories(openai INTERFACE
     $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/cJSON>
 )
 
-# Dependencies for libcurl backend
-find_package(CURL QUIET)
-if(CURL_FOUND AND OPENAI_HTTP_BACKEND EQUAL OPENAI_BACKEND_CURL)
-    target_link_libraries(openai INTERFACE CURL::libcurl)
-endif()
-
-# pkg-config for libcurl fallback
-find_package(PkgConfig QUIET)
-if(PkgConfig_FOUND)
-    pkg_check_modules(CURL_PC libcurl QUIET)
-    if(CURL_PC_FOUND)
-        target_link_libraries(openai INTERFACE ${CURL_PC_LIBRARIES})
-        target_include_directories(openai INTERFACE ${CURL_PC_INCLUDE_DIRS})
+# Dependencies for libcurl backend (using git submodule)
+if(OPENAI_HTTP_BACKEND EQUAL OPENAI_BACKEND_CURL)
+    if(NOT EXISTS ${CMAKE_SOURCE_DIR}/third_party/libcurl/CMakeLists.txt)
+        message(FATAL_ERROR "libcurl submodule not found. Run: git submodule update --init --recursive")
     endif()
+    add_subdirectory(third_party/libcurl)
+    target_link_libraries(openai INTERFACE curl)
 endif()
 
 # Installation

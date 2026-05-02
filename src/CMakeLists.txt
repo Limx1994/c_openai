@@ -16,8 +16,7 @@ if(OPENAI_HTTP_BACKEND EQUAL OPENAI_BACKEND_LWIP)
     # Link lwIP and mbedTLS for TLS support
     target_link_libraries(openai_client PUBLIC lwip mbedtls)
 else()
-    find_package(CURL REQUIRED)
-    target_link_libraries(openai_client CURL::libcurl)
+    # libcurl is included via third_party/libcurl submodule
     target_sources(openai_client PRIVATE openai_http_curl.c)
 endif()
 

@@ -33,6 +33,7 @@ c_openai/
 │   └── openai_error.c    # 错误处理
 ├── cJSON/                # JSON 解析器（cJSON 库）
 ├── third_party/          # 第三方库
+│   ├── libcurl/          # libcurl HTTP 库（git submodule）
 │   ├── lwip/             # lwIP TCP/IP 协议栈（git submodule）
 │   ├── mbedtls/          # mbedTLS 加密库（git submodule）
 │   └── CMakeLists.txt    # 第三方库构建配置
@@ -50,8 +51,7 @@ c_openai/
 
 - CMake 3.10 或更高
 - Git（支持子模块）
-- libcurl 后端：libcurl 开发文件
-- lwIP 后端：git 子模块（自动获取）
+- 所有依赖库均通过 git submodule 集成（libcurl、lwIP、mbedtls）
 
 ### 使用 libcurl 构建（默认，用于 PC/服务器）
 
@@ -219,15 +219,21 @@ const char* err_str = openai_error_str(OPENAI_ERR_NETWORK);
 
 ### Linux / 树莓派
 
-安装 libcurl 开发包：
+所有依赖库均通过 git submodule 集成。克隆时需：
 ```bash
-sudo apt-get install libcurl4-openssl-dev
+git clone --recursive https://github.com/Limx1994/c_openai.git
+# 或如果已经克隆：
+git submodule update --init --recursive
 ```
 
 ### Windows (MSYS2/MinGW)
 
 ```bash
-pacman -S mingw-w64-x86_64-curl
+git clone --recursive https://github.com/Limx1994/c_openai.git
+cd c_openai
+mkdir build && cd build
+cmake .. -G "MSYS Makefiles"
+make
 ```
 
 ### STM32 / 嵌入式
