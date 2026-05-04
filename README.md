@@ -192,9 +192,13 @@ OpenAI_Client* client = openai_client_new(getenv("OPENAI_API_KEY"));
 | `openai_embeddings_create(client, req)` | Get embeddings for text |
 | `openai_embedding_response_free(resp)` | Free response |
 
-### Streaming (planned)
+### Streaming
 
-Streaming API is defined but not fully implemented yet.
+| Function | Description |
+|----------|-------------|
+| `openai_chat_create_stream(client, req)` | Create streaming chat request |
+| `openai_stream_read(stream, event)` | Read next event from stream |
+| `openai_stream_close(stream)` | Close stream and free resources |
 
 ## Error Handling
 
@@ -214,6 +218,8 @@ Error codes:
 - `OPENAI_ERR_AUTH` - Authentication failed
 - `OPENAI_ERR_RATE_LIMIT` - Rate limit exceeded
 - `OPENAI_ERR_SERVER` - Server error
+- `OPENAI_ERR_BUFFER_EMPTY` - Buffer empty (streaming)
+- `OPENAI_ERR_EOF` - End of stream (streaming)
 
 ## Platform-Specific Notes
 

@@ -1,3 +1,8 @@
+/**
+ * @file openai_types.h
+ * @brief OpenAI API Type Definitions
+ */
+
 #ifndef OPENAI_TYPES_H
 #define OPENAI_TYPES_H
 
@@ -9,66 +14,81 @@
 #define OPENAI_ROLE_ASSISTANT "assistant"
 #define OPENAI_ROLE_FUNCTION "function"
 
-/* Chat message */
+/**
+ * @brief Chat message structure
+ */
 typedef struct {
-    char* role;
-    char* content;
-    char* name;
+    char* role;      /**< Message role (system/user/assistant) */
+    char* content;    /**< Message content */
+    char* name;      /**< Optional speaker name */
 } OpenAI_Message;
 
-/* Chat request */
+/**
+ * @brief Chat completion request structure
+ */
 typedef struct {
-    char* model;
-    OpenAI_Message* messages;
-    size_t message_count;
-    float temperature;
-    int max_tokens;
-    float top_p;
-    int stream;
-    char* stop;
+    char* model;          /**< Model name (e.g., "gpt-3.5-turbo") */
+    OpenAI_Message* messages; /**< Array of messages */
+    size_t message_count;   /**< Number of messages */
+    float temperature;     /**< Sampling temperature (0.0-2.0) */
+    int max_tokens;        /**< Maximum tokens in response (0=default) */
+    float top_p;           /**< Nucleus sampling parameter */
+    int stream;            /**< Stream flag (set automatically for streaming) */
+    char* stop;            /**< Stop sequences */
 } OpenAI_ChatRequest;
 
-/* Chat response choice */
+/**
+ * @brief Chat response choice
+ */
 typedef struct {
-    char* content;
-    char* role;
-    int index;
+    char* content;    /**< Response content */
+    char* role;       /**< Message role */
+    int index;        /**< Choice index */
 } OpenAI_Choice;
 
-/* Chat response */
+/**
+ * @brief Chat completion response
+ */
 typedef struct {
-    char* id;
-    char* model;
-    char* object;
-    long created;
-    OpenAI_Choice* choices;
-    size_t choice_count;
-    char* usage;
+    char* id;              /**< Response ID */
+    char* model;            /**< Model used */
+    char* object;           /**< Response object type */
+    long created;           /**< Timestamp */
+    OpenAI_Choice* choices; /**< Array of choices */
+    size_t choice_count;     /**< Number of choices */
+    char* usage;            /**< Usage information string */
 } OpenAI_ChatResponse;
 
-/* Embeddings request */
+/**
+ * @brief Embeddings request structure
+ */
 typedef struct {
-    char* model;
-    char* input;
+    char* model;   /**< Embedding model (e.g., "text-embedding-3-small") */
+    char* input;    /**< Input text to embed */
 } OpenAI_EmbeddingRequest;
 
-/* Embeddings response */
+/**
+ * @brief Embeddings response structure
+ */
 typedef struct {
-    char* object;
-    char* model;
-    float* embedding;
-    size_t embedding_dim;
+    char* object;           /**< Object type */
+    char* model;            /**< Model used */
+    float* embedding;        /**< Embedding vector */
+    size_t embedding_dim;    /**< Embedding vector dimension */
 } OpenAI_EmbeddingResponse;
 
 /* Stream event types */
 #define OPENAI_EVENT_CHUNK "chat.completion.chunk"
 #define OPENAI_EVENT_DONE "done"
 
+/**
+ * @brief Stream event structure
+ */
 typedef struct {
-    char* event_type;
-    char* content;
-    char* role;
-    int index;
+    char* event_type;   /**< Event type (e.g., "chat.completion.chunk") */
+    char* content;      /**< Delta content (caller must free) */
+    char* role;         /**< Optional role */
+    int index;          /**< Choice index */
 } OpenAI_StreamEvent;
 
 /* Client handle - forward declaration */

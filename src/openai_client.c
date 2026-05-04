@@ -196,6 +196,37 @@ OpenAI_ChatResponse* openai_chat_create(OpenAI_Client* client, OpenAI_ChatReques
         }
     }
 
+    /* Extract usage */
+    OpenAI_JSONNode* usage = openai_json_get_object(json, "usage");
+    if (usage) {
+        char usage_buf[256];
+        usage_buf[0] = '\0';
+
+        const char* prompt_tokens = openai_json_get_string(usage, "prompt_tokens");
+        const char* completion_tokens = openai_json_get_string(usage, "completion_tokens");
+        const char* total_tokens = openai_json_get_string(usage, "total_tokens");
+
+        if (prompt_tokens && completion_tokens && total_tokens) {
+            snprintf(usage_buf, sizeof(usage_buf),
+                "prompt_tokens=%s, completion_tokens=%s, total_tokens=%s",
+                prompt_tokens, completion_tokens, total_tokens);
+        } else {
+            double p_tokens = openai_json_get_number(usage, "prompt_tokens");
+            double c_tokens = openai_json_get_number(usage, "completion_tokens");
+            double t_tokens = openai_json_get_number(usage, "total_tokens");
+            if (p_tokens > 0 || c_tokens > 0 || t_tokens > 0) {
+                snprintf(usage_buf, sizeof(usage_buf),
+                    "prompt_tokens=%.0f, completion_tokens=%.0f, total_tokens=%.0f",
+                    p_tokens, c_tokens, t_tokens);
+            }
+        }
+
+        if (usage_buf[0] != '\0') {
+            resp->usage = (char*)malloc(strlen(usage_buf) + 1);
+            strcpy(resp->usage, usage_buf);
+        }
+    }
+
     openai_json_free(json);
     return resp;
 }
@@ -204,6 +235,7 @@ void openai_chat_response_free(OpenAI_ChatResponse* resp) {
     if (resp) {
         if (resp->id) free(resp->id);
         if (resp->model) free(resp->model);
+        if (resp->usage) free(resp->usage);
         if (resp->choices) {
             for (size_t i = 0; i < resp->choice_count; i++) {
                 if (resp->choices[i].content) free(resp->choices[i].content);
@@ -221,13 +253,64 @@ typedef struct {
     char* buffer;
     size_t buffer_size;
     size_t buffer_pos;
+    size_t parse_pos;
     int eof;
 } OpenAI_StreamHandle;
+
+static int parse_sse_line(const char* line, size_t len, char* output, size_t output_size) {
+    /* SSE format: "data: {\"key\": \"value\"}" */
+    if (len < 6 || strncmp(line, "data: ", 6) != 0) {
+        return -1;
+    }
+    line += 6;
+    len -= 6;
+
+    /* Check for [DONE] marker */
+    if (len >= 7 && strncmp(line, "[DONE]", 7) == 0) {
+        return 1;
+    }
+
+    /* Parse the JSON to extract delta.content */
+    /* Simple approach: look for "content\":\" ... \"" */
+    const char* content_start = strstr(line, "\"content\":\"");
+    if (content_start) {
+        content_start += 10; /* skip "\"content\":\"" */
+        const char* content_end = strstr(content_start, "\"");
+        if (content_end) {
+            size_t content_len = content_end - content_start;
+            if (content_len < output_size - 1) {
+                memcpy(output, content_start, content_len);
+                output[content_len] = '\0';
+                return 0;
+            }
+        }
+    }
+    return -1;
+}
+
+static int find_line_start(const char* buffer, size_t size, size_t start) {
+    while (start < size) {
+        if (buffer[start] == '\n' || buffer[start] == '\r') {
+            break;
+        }
+        start++;
+    }
+    return start;
+}
+
+static int find_line_end(const char* buffer, size_t size, size_t start) {
+    while (start < size) {
+        if (buffer[start] == '\n' || buffer[start] == '\r') {
+            return start;
+        }
+        start++;
+    }
+    return size;
+}
 
 void* openai_chat_create_stream(OpenAI_Client* client, OpenAI_ChatRequest* req) {
     if (!client || !req) return NULL;
 
-    /* For streaming, we set the stream flag and make the request */
     req->stream = 1;
 
     char* url = OPENAI_API_BASE "/chat/completions";
@@ -242,21 +325,84 @@ void* openai_chat_create_stream(OpenAI_Client* client, OpenAI_ChatRequest* req) 
         .body_size = strlen(body)
     };
 
-    /* For streaming, we'd need chunked response handling */
-    /* This is a simplified version - real implementation would use
-     * libcurl's CURLOPT_WRITEFUNCTION with streaming callback */
-
+    OpenAI_HTTPResponse* http_resp = openai_http_request_stream(&http_req);
     free(body);
 
-    /* Return NULL for now - streaming requires more complex implementation */
-    (void)http_req;
-    return NULL;
+    if (!http_resp) return NULL;
+
+    OpenAI_StreamHandle* handle = (OpenAI_StreamHandle*)calloc(1, sizeof(OpenAI_StreamHandle));
+    if (!handle) {
+        openai_http_response_free(http_resp);
+        return NULL;
+    }
+
+    handle->buffer = http_resp->body;
+    handle->buffer_size = http_resp->body_size;
+    handle->buffer_pos = 0;
+    handle->parse_pos = 0;
+    handle->eof = 0;
+
+    /* Clean up http_resp struct but NOT the body (transferred to handle) */
+    if (http_resp->headers) free(http_resp->headers);
+    free(http_resp);
+
+    return handle;
 }
 
 int openai_stream_read(void* stream, OpenAI_StreamEvent* event) {
-    (void)stream;
-    (void)event;
-    return OPENAI_ERR_INVALID_PARAM;
+    if (!stream || !event) return OPENAI_ERR_INVALID_PARAM;
+
+    OpenAI_StreamHandle* handle = (OpenAI_StreamHandle*)stream;
+
+    if (handle->eof) {
+        return OPENAI_ERR_EOF;
+    }
+
+    memset(event, 0, sizeof(OpenAI_StreamEvent));
+
+    char line_buffer[1024];
+    int found_content = 0;
+
+    while (handle->parse_pos < handle->buffer_size) {
+        int line_start = find_line_start(handle->buffer, handle->buffer_size, handle->parse_pos);
+        int line_end = find_line_end(handle->buffer, handle->buffer_size, line_start);
+
+        size_t line_len = line_end - line_start;
+        if (line_len >= sizeof(line_buffer)) {
+            line_len = sizeof(line_buffer) - 1;
+        }
+
+        if (line_len > 0) {
+            memcpy(line_buffer, handle->buffer + line_start, line_len);
+            line_buffer[line_len] = '\0';
+
+            char content[512] = {0};
+            int ret = parse_sse_line(line_buffer, line_len, content, sizeof(content));
+
+            if (ret == 1) {
+                handle->eof = 1;
+                return OPENAI_ERR_EOF;
+            } else if (ret == 0 && content[0] != '\0') {
+                event->content = (char*)malloc(strlen(content) + 1);
+                strcpy(event->content, content);
+                event->event_type = (char*)OPENAI_EVENT_CHUNK;
+                handle->parse_pos = line_end + 1;
+                if (handle->parse_pos < handle->buffer_size &&
+                    (handle->buffer[handle->parse_pos] == '\n' || handle->buffer[handle->parse_pos] == '\r')) {
+                    handle->parse_pos++;
+                }
+                return 0;
+            }
+        }
+
+        handle->parse_pos = line_end + 1;
+        if (handle->parse_pos < handle->buffer_size &&
+            (handle->buffer[handle->parse_pos] == '\n' || handle->buffer[handle->parse_pos] == '\r')) {
+            handle->parse_pos++;
+        }
+    }
+
+    return OPENAI_ERR_BUFFER_EMPTY;
 }
 
 void openai_stream_close(void* stream) {

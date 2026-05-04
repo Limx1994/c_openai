@@ -192,9 +192,13 @@ OpenAI_Client* client = openai_client_new(getenv("OPENAI_API_KEY"));
 | `openai_embeddings_create(client, req)` | 获取文本的嵌入向量 |
 | `openai_embedding_response_free(resp)` | 释放响应 |
 
-### 流式响应（计划中）
+### 流式响应
 
-流式 API 已定义但尚未完全实现。
+| 函数 | 描述 |
+|------|------|
+| `openai_chat_create_stream(client, req)` | 创建流式聊天请求 |
+| `openai_stream_read(stream, event)` | 从流中读取下一个事件 |
+| `openai_stream_close(stream)` | 关闭流并释放资源 |
 
 ## 错误处理
 
@@ -214,6 +218,8 @@ const char* err_str = openai_error_str(OPENAI_ERR_NETWORK);
 - `OPENAI_ERR_AUTH` - 认证失败
 - `OPENAI_ERR_RATE_LIMIT` - 超出速率限制
 - `OPENAI_ERR_SERVER` - 服务器错误
+- `OPENAI_ERR_BUFFER_EMPTY` - 缓冲区为空（流式响应）
+- `OPENAI_ERR_EOF` - 流结束（流式响应）
 
 ## 平台说明
 
