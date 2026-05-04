@@ -22,6 +22,10 @@ const char* openai_error_str(OpenAI_ErrorCode code) {
             return "Rate limit exceeded";
         case OPENAI_ERR_SERVER:
             return "Server error";
+        case OPENAI_ERR_BUFFER_EMPTY:
+            return "Buffer empty";
+        case OPENAI_ERR_EOF:
+            return "End of stream";
         default:
             return "Unknown error";
     }
