@@ -12,7 +12,8 @@
 #ifdef OPENAI_USE_LWIP
 #include <lwip/sockets.h>
 #include <lwip/netdb.h>
-#include <lwip/tls.h>
+#include <lwip/ip_addr.h>
+#include <lwip/altcp_tls.h>
 #endif
 
 #include "openai_http.h"
@@ -176,7 +177,8 @@ OpenAI_HTTPResponse* openai_http_request(OpenAI_HTTPRequest* req) {
         }
 
         /* Build HTTP request */
-        size_t header_size = 512 + strlen(req->auth_header ? req->auth_header : "");
+        size_t auth_len = req->auth_header ? strlen(req->auth_header) : 0;
+        size_t header_size = 512 + auth_len;
         char* header = (char*)malloc(header_size);
         if (!header) {
             altcp_tls_free_config(tls_config);
@@ -184,16 +186,29 @@ OpenAI_HTTPResponse* openai_http_request(OpenAI_HTTPRequest* req) {
             return NULL;
         }
 
-        int header_len = snprintf(header, header_size,
-            "POST %s HTTP/1.1\r\n"
-            "Host: %s\r\n"
-            "Authorization: Bearer %s\r\n"
-            "Content-Type: application/json\r\n"
-            "Accept: application/json\r\n"
-            "Content-Length: %zu\r\n"
-            "\r\n",
-            path, host, req->auth_header ? req->auth_header : "",
-            req->body ? req->body_size : 0);
+        int header_len;
+        if (req->auth_header) {
+            header_len = snprintf(header, header_size,
+                "POST %s HTTP/1.1\r\n"
+                "Host: %s\r\n"
+                "Authorization: Bearer %s\r\n"
+                "Content-Type: application/json\r\n"
+                "Accept: application/json\r\n"
+                "Content-Length: %zu\r\n"
+                "\r\n",
+                path, host, req->auth_header,
+                req->body ? req->body_size : 0);
+        } else {
+            header_len = snprintf(header, header_size,
+                "POST %s HTTP/1.1\r\n"
+                "Host: %s\r\n"
+                "Content-Type: application/json\r\n"
+                "Accept: application/json\r\n"
+                "Content-Length: %zu\r\n"
+                "\r\n",
+                path, host,
+                req->body ? req->body_size : 0);
+        }
 
         /* Send header */
         int total_sent = 0;
@@ -296,7 +311,8 @@ OpenAI_HTTPResponse* openai_http_request(OpenAI_HTTPRequest* req) {
     int sock = (int)(intptr_t)conn;
 
     /* Build HTTP request */
-    size_t header_size = 512 + strlen(req->auth_header ? req->auth_header : "");
+    size_t auth_len = req->auth_header ? strlen(req->auth_header) : 0;
+    size_t header_size = 512 + auth_len;
     char* header = (char*)malloc(header_size);
     if (!header) {
 #ifdef OPENAI_USE_LWIP
@@ -305,16 +321,29 @@ OpenAI_HTTPResponse* openai_http_request(OpenAI_HTTPRequest* req) {
         return NULL;
     }
 
-    int header_len = snprintf(header, header_size,
-        "POST %s HTTP/1.1\r\n"
-        "Host: %s\r\n"
-        "Authorization: Bearer %s\r\n"
-        "Content-Type: application/json\r\n"
-        "Accept: application/json\r\n"
-        "Content-Length: %zu\r\n"
-        "\r\n",
-        path, host, req->auth_header ? req->auth_header : "",
-        req->body ? req->body_size : 0);
+    int header_len;
+    if (req->auth_header) {
+        header_len = snprintf(header, header_size,
+            "POST %s HTTP/1.1\r\n"
+            "Host: %s\r\n"
+            "Authorization: Bearer %s\r\n"
+            "Content-Type: application/json\r\n"
+            "Accept: application/json\r\n"
+            "Content-Length: %zu\r\n"
+            "\r\n",
+            path, host, req->auth_header,
+            req->body ? req->body_size : 0);
+    } else {
+        header_len = snprintf(header, header_size,
+            "POST %s HTTP/1.1\r\n"
+            "Host: %s\r\n"
+            "Content-Type: application/json\r\n"
+            "Accept: application/json\r\n"
+            "Content-Length: %zu\r\n"
+            "\r\n",
+            path, host,
+            req->body ? req->body_size : 0);
+    }
 
     /* Send request */
     int total_sent = 0;
@@ -435,4 +464,324 @@ void openai_http_response_free(OpenAI_HTTPResponse* resp) {
         if (resp->headers) free(resp->headers);
         free(resp);
     }
+}
+
+/* Streaming HTTP request - for SSE responses */
+OpenAI_HTTPResponse* openai_http_request_stream(OpenAI_HTTPRequest* req) {
+    if (!req || !req->url) return NULL;
+
+    char host[256] = {0};
+    char path[512] = {0};
+    int port = 443;
+    int is_https = (strncmp(req->url, "https://", 8) == 0);
+
+    if (openai_http_parse_url(req->url, host, sizeof(host), &port, path, sizeof(path)) != 0) {
+        return NULL;
+    }
+
+    void* conn = openai_http_connect(host, port, is_https);
+    if (!conn) return NULL;
+
+#ifdef LWIP_ALTCP_TLS
+    if (is_https && OPENAI_USE_TLS) {
+        struct altcp_pcb* pcb = (struct altcp_pcb*)conn;
+        struct altcp_tls_config* tls_config = (struct altcp_tls_config*)pcb->state;
+
+        /* DNS resolution and connect */
+        ip_addr_t ipaddr;
+        struct hostent* server = gethostbyname(host);
+        if (!server) {
+            altcp_tls_free_config(tls_config);
+            altcp_close(pcb);
+            return NULL;
+        }
+        memcpy(&ipaddr, server->h_addr, server->h_length);
+
+        err_t err = altcp_connect(pcb, &ipaddr, port, NULL);
+        if (err != ERR_OK) {
+            altcp_tls_free_config(tls_config);
+            altcp_close(pcb);
+            return NULL;
+        }
+
+        /* Build HTTP request for streaming */
+        size_t auth_len = req->auth_header ? strlen(req->auth_header) : 0;
+        size_t header_size = 512 + auth_len;
+        char* header = (char*)malloc(header_size);
+        if (!header) {
+            altcp_tls_free_config(tls_config);
+            altcp_close(pcb);
+            return NULL;
+        }
+
+        int header_len;
+        if (req->auth_header) {
+            header_len = snprintf(header, header_size,
+                "POST %s HTTP/1.1\r\n"
+                "Host: %s\r\n"
+                "Authorization: Bearer %s\r\n"
+                "Content-Type: application/json\r\n"
+                "Accept: text/event-stream\r\n"
+                "Content-Length: %zu\r\n"
+                "\r\n",
+                path, host, req->auth_header,
+                req->body ? req->body_size : 0);
+        } else {
+            header_len = snprintf(header, header_size,
+                "POST %s HTTP/1.1\r\n"
+                "Host: %s\r\n"
+                "Content-Type: application/json\r\n"
+                "Accept: text/event-stream\r\n"
+                "Content-Length: %zu\r\n"
+                "\r\n",
+                path, host,
+                req->body ? req->body_size : 0);
+        }
+
+        /* Send header */
+        int total_sent = 0;
+        while (total_sent < header_len) {
+            int sent = altcp_write(pcb, header + total_sent, header_len - total_sent, 0);
+            if (sent < 0) {
+                free(header);
+                altcp_tls_free_config(tls_config);
+                altcp_close(pcb);
+                return NULL;
+            }
+            total_sent += sent;
+        }
+        free(header);
+
+        /* Send body if present */
+        if (req->body && req->body_size > 0) {
+            total_sent = 0;
+            while (total_sent < (int)req->body_size) {
+                int sent = altcp_write(pcb, req->body + total_sent, req->body_size - total_sent, 0);
+                if (sent < 0) {
+                    altcp_tls_free_config(tls_config);
+                    altcp_close(pcb);
+                    return NULL;
+                }
+                total_sent += sent;
+            }
+        }
+
+        /* Read response */
+        size_t buf_capacity = 4096;
+        size_t buf_size = 0;
+        char* buf = (char*)malloc(buf_capacity);
+        if (!buf) {
+            altcp_tls_free_config(tls_config);
+            altcp_close(pcb);
+            return NULL;
+        }
+
+        while (1) {
+            if (buf_size >= buf_capacity - 1) {
+                buf_capacity *= 2;
+                char* new_buf = (char*)realloc(buf, buf_capacity);
+                if (!new_buf) {
+                    free(buf);
+                    altcp_tls_free_config(tls_config);
+                    altcp_close(pcb);
+                    return NULL;
+                }
+                buf = new_buf;
+            }
+
+            int received = altcp_read(pcb, buf + buf_size, buf_capacity - buf_size - 1);
+            if (received <= 0) break;
+            buf_size += received;
+            buf[buf_size] = '\0';
+
+            char* header_end = strstr(buf, "\r\n\r\n");
+            if (header_end) break;
+        }
+
+        altcp_tls_free_config(tls_config);
+        altcp_close(pcb);
+
+        OpenAI_HTTPResponse* resp = (OpenAI_HTTPResponse*)calloc(1, sizeof(OpenAI_HTTPResponse));
+        if (!resp) {
+            free(buf);
+            return NULL;
+        }
+
+        char* body_start = strstr(buf, "\r\n\r\n");
+        if (body_start) {
+            body_start += 4;
+            char* status_line = buf;
+            char* line_end = strstr(buf, "\r\n");
+            if (line_end) {
+                *line_end = '\0';
+                char* status = strchr(status_line, ' ');
+                if (status) {
+                    status++;
+                    resp->status_code = atoi(status);
+                }
+            }
+            size_t body_len = buf_size - (body_start - buf);
+            resp->body = (char*)malloc(body_len + 1);
+            if (resp->body) {
+                memcpy(resp->body, body_start, body_len);
+                resp->body[body_len] = '\0';
+                resp->body_size = body_len;
+            }
+        } else {
+            resp->status_code = 0;
+        }
+        free(buf);
+        return resp;
+    }
+#endif
+
+    /* Plain HTTP branch */
+    int sock = (int)(intptr_t)conn;
+
+    /* Build HTTP request for streaming */
+    size_t auth_len = req->auth_header ? strlen(req->auth_header) : 0;
+    size_t header_size = 512 + auth_len;
+    char* header = (char*)malloc(header_size);
+    if (!header) {
+#ifdef OPENAI_USE_LWIP
+        closesocket(sock);
+#endif
+        return NULL;
+    }
+
+    int header_len;
+    if (req->auth_header) {
+        header_len = snprintf(header, header_size,
+            "POST %s HTTP/1.1\r\n"
+            "Host: %s\r\n"
+            "Authorization: Bearer %s\r\n"
+            "Content-Type: application/json\r\n"
+            "Accept: text/event-stream\r\n"
+            "Content-Length: %zu\r\n"
+            "\r\n",
+            path, host, req->auth_header,
+            req->body ? req->body_size : 0);
+    } else {
+        header_len = snprintf(header, header_size,
+            "POST %s HTTP/1.1\r\n"
+            "Host: %s\r\n"
+            "Content-Type: application/json\r\n"
+            "Accept: text/event-stream\r\n"
+            "Content-Length: %zu\r\n"
+            "\r\n",
+            path, host,
+            req->body ? req->body_size : 0);
+    }
+
+    /* Send request */
+    int total_sent = 0;
+    while (total_sent < header_len) {
+        int sent = send(sock, header + total_sent, header_len - total_sent, 0);
+        if (sent < 0) {
+            free(header);
+#ifdef OPENAI_USE_LWIP
+            closesocket(sock);
+#endif
+            return NULL;
+        }
+        total_sent += sent;
+    }
+
+    /* Send body if present */
+    if (req->body && req->body_size > 0) {
+        total_sent = 0;
+        while (total_sent < (int)req->body_size) {
+            int sent = send(sock, req->body + total_sent, req->body_size - total_sent, 0);
+            if (sent < 0) {
+                free(header);
+#ifdef OPENAI_USE_LWIP
+                closesocket(sock);
+#endif
+                return NULL;
+            }
+            total_sent += sent;
+        }
+    }
+
+    free(header);
+
+    /* Read response */
+    size_t buf_capacity = 4096;
+    size_t buf_size = 0;
+    char* buf = (char*)malloc(buf_capacity);
+    if (!buf) {
+#ifdef OPENAI_USE_LWIP
+        closesocket(sock);
+#endif
+        return NULL;
+    }
+
+    while (1) {
+        if (buf_size >= buf_capacity - 1) {
+            buf_capacity *= 2;
+            char* new_buf = (char*)realloc(buf, buf_capacity);
+            if (!new_buf) {
+                free(buf);
+#ifdef OPENAI_USE_LWIP
+                closesocket(sock);
+#endif
+                return NULL;
+            }
+            buf = new_buf;
+        }
+
+        int received = recv(sock, buf + buf_size, buf_capacity - buf_size - 1, 0);
+        if (received <= 0) break;
+        buf_size += received;
+        buf[buf_size] = '\0';
+
+        /* Check for end of headers */
+        char* header_end = strstr(buf, "\r\n\r\n");
+        if (header_end) break;
+    }
+
+#ifdef OPENAI_USE_LWIP
+    closesocket(sock);
+#endif
+
+    OpenAI_HTTPResponse* resp = (OpenAI_HTTPResponse*)calloc(1, sizeof(OpenAI_HTTPResponse));
+    if (!resp) {
+        free(buf);
+        return NULL;
+    }
+
+    /* Parse HTTP response */
+    char* body_start = strstr(buf, "\r\n\r\n");
+    if (body_start) {
+        body_start += 4;
+
+        /* Parse status line */
+        char* status_line = buf;
+        char* line_end = strstr(buf, "\r\n");
+        if (line_end) {
+            *line_end = '\0';
+
+            /* HTTP/1.1 200 OK */
+            char* status = strchr(status_line, ' ');
+            if (status) {
+                status++;
+                resp->status_code = atoi(status);
+            }
+        }
+
+        size_t body_len = buf_size - (body_start - buf);
+        resp->body = (char*)malloc(body_len + 1);
+        if (resp->body) {
+            memcpy(resp->body, body_start, body_len);
+            resp->body[body_len] = '\0';
+            resp->body_size = body_len;
+        }
+    } else {
+        resp->status_code = 0;
+        resp->body = NULL;
+        resp->body_size = 0;
+    }
+
+    free(buf);
+    return resp;
 }

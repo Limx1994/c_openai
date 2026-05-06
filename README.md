@@ -13,6 +13,7 @@ A cross-platform OpenAI API client written in C, designed for MCU (Microcontroll
   - Chat Completions
   - Streaming responses (SSE)
   - Embeddings
+- **Security**: JSON injection prevention, memory safety checks, secure auth header handling
 
 ## Project Structure
 
@@ -49,7 +50,7 @@ c_openai/
 
 ### Prerequisites
 
-- CMake 3.10 or higher
+- CMake 3.18 or higher
 - Git (with submodule support)
 - All dependencies included as git submodules (libcurl, lwIP, mbedtls)
 
@@ -200,6 +201,19 @@ OpenAI_Client* client = openai_client_new(getenv("OPENAI_API_KEY"));
 | `openai_stream_read(stream, event)` | Read next event from stream |
 | `openai_stream_close(stream)` | Close stream and free resources |
 
+### JSON Utilities
+
+| Function | Description |
+|----------|-------------|
+| `openai_json_parse(json_string)` | Parse JSON string into DOM |
+| `openai_json_free(node)` | Free JSON DOM |
+| `openai_json_dump(node)` | Convert JSON DOM to string |
+| `openai_json_escape_string(str)` | Escape string for JSON (prevents injection) |
+| `openai_json_get_string(parent, key)` | Get string value from object |
+| `openai_json_get_number(parent, key)` | Get number value from object |
+| `openai_json_get_object(parent, key)` | Get child object by key |
+| `openai_json_get_array_item(parent, index)` | Get array item by index |
+
 ## Error Handling
 
 ```c
@@ -220,6 +234,20 @@ Error codes:
 - `OPENAI_ERR_SERVER` - Server error
 - `OPENAI_ERR_BUFFER_EMPTY` - Buffer empty (streaming)
 - `OPENAI_ERR_EOF` - End of stream (streaming)
+
+## Security Features
+
+This library includes several security enhancements:
+
+1. **JSON Injection Prevention**: The `openai_json_escape_string()` function escapes special characters (`"`, `\`, `/`, `\n`, `\r`, `\t`) to prevent JSON injection attacks when embedding user content. This applies to model names, roles, and message content in Chat Completions and Embeddings requests.
+
+2. **Memory Safety**: All `malloc()`, `calloc()`, and `realloc()` calls include NULL pointer checks to prevent crashes from allocation failures.
+
+3. **Safe Auth Header Handling**: Authorization headers are only added when a valid API key is present, preventing "Bearer (null)" headers.
+
+4. **Buffer Overflow Protection**: Dynamic buffer expansion includes proper size checks before writing, with overflow checks in `snprintf` offset calculations.
+
+5. **lwIP Backend Streaming Support**: Both libcurl and lwIP backends now support streaming (SSE) requests for real-time response processing on embedded devices.
 
 ## Platform-Specific Notes
 
