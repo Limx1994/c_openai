@@ -72,4 +72,11 @@ OpenAI_JSONNode* openai_json_get_array_item(OpenAI_JSONNode* parent, size_t inde
  */
 size_t openai_json_get_array_size(OpenAI_JSONNode* parent);
 
+/**
+ * @brief Escape string for JSON
+ * @param str Input string to escape
+ * @return Escaped JSON string (caller must free), or NULL on failure
+ */
+char* openai_json_escape_string(const char* str);
+
 #endif /* OPENAI_JSON_H */

@@ -68,6 +68,7 @@ static const char* openai_json_parse_object(const char* p, OpenAI_JSONNode* pare
     OpenAI_JSONNode* prev = NULL;
     while (*p && *p != '}') {
         OpenAI_JSONNode* child = (OpenAI_JSONNode*)calloc(1, sizeof(OpenAI_JSONNode));
+        if (!child) return p;
         p = openai_json_skip_space(p);
         p = openai_json_parse_string(p, &child->key);
         p = openai_json_skip_space(p);
@@ -100,6 +101,7 @@ static const char* openai_json_parse_array(const char* p, OpenAI_JSONNode* paren
     OpenAI_JSONNode* prev = NULL;
     while (*p && *p != ']') {
         OpenAI_JSONNode* child = (OpenAI_JSONNode*)calloc(1, sizeof(OpenAI_JSONNode));
+        if (!child) return p;
         p = openai_json_skip_space(p);
         p = openai_json_parse_value(p, child);
 
@@ -246,7 +248,12 @@ char* openai_json_dump(OpenAI_JSONNode* node) {
                 buf[len++] = ',';
                 if (len >= buf_size - 1) {
                     buf_size *= 2;
-                    buf = (char*)realloc(buf, buf_size);
+                    char* new_buf = (char*)realloc(buf, buf_size);
+                    if (!new_buf) {
+                        free(buf);
+                        return NULL;
+                    }
+                    buf = new_buf;
                 }
                 buf[len] = '\0';
             }
@@ -258,7 +265,12 @@ char* openai_json_dump(OpenAI_JSONNode* node) {
 
             if (len + key_len >= buf_size - 1) {
                 buf_size *= 2;
-                buf = (char*)realloc(buf, buf_size);
+                char* new_buf = (char*)realloc(buf, buf_size);
+                if (!new_buf) {
+                    free(buf);
+                    return NULL;
+                }
+                buf = new_buf;
             }
             memcpy(buf + len, key_buf, key_len);
             len += key_len;
@@ -270,7 +282,13 @@ char* openai_json_dump(OpenAI_JSONNode* node) {
                     size_t child_len = strlen(child_str);
                     while (len + child_len >= buf_size - 1) {
                         buf_size *= 2;
-                        buf = (char*)realloc(buf, buf_size);
+                        char* new_buf = (char*)realloc(buf, buf_size);
+                        if (!new_buf) {
+                            free(buf);
+                            free(child_str);
+                            return NULL;
+                        }
+                        buf = new_buf;
                     }
                     memcpy(buf + len, child_str, child_len);
                     len += child_len;
@@ -283,7 +301,12 @@ char* openai_json_dump(OpenAI_JSONNode* node) {
                 size_t val_len = strlen(val_buf);
                 while (len + val_len >= buf_size - 1) {
                     buf_size *= 2;
-                    buf = (char*)realloc(buf, buf_size);
+                    char* new_buf = (char*)realloc(buf, buf_size);
+                    if (!new_buf) {
+                        free(buf);
+                        return NULL;
+                    }
+                    buf = new_buf;
                 }
                 memcpy(buf + len, val_buf, val_len);
                 len += val_len;
@@ -293,7 +316,12 @@ char* openai_json_dump(OpenAI_JSONNode* node) {
                 int written = snprintf(val_buf, sizeof(val_buf), "%g", child->number_value);
                 while (len + written >= buf_size - 1) {
                     buf_size *= 2;
-                    buf = (char*)realloc(buf, buf_size);
+                    char* new_buf = (char*)realloc(buf, buf_size);
+                    if (!new_buf) {
+                        free(buf);
+                        return NULL;
+                    }
+                    buf = new_buf;
                 }
                 memcpy(buf + len, val_buf, written);
                 len += written;
@@ -321,7 +349,12 @@ char* openai_json_dump(OpenAI_JSONNode* node) {
                 buf[len++] = ',';
                 if (len >= buf_size - 1) {
                     buf_size *= 2;
-                    buf = (char*)realloc(buf, buf_size);
+                    char* new_buf = (char*)realloc(buf, buf_size);
+                    if (!new_buf) {
+                        free(buf);
+                        return NULL;
+                    }
+                    buf = new_buf;
                 }
                 buf[len] = '\0';
             }
@@ -333,7 +366,13 @@ char* openai_json_dump(OpenAI_JSONNode* node) {
                     size_t child_len = strlen(child_str);
                     while (len + child_len >= buf_size - 1) {
                         buf_size *= 2;
-                        buf = (char*)realloc(buf, buf_size);
+                        char* new_buf = (char*)realloc(buf, buf_size);
+                        if (!new_buf) {
+                            free(buf);
+                            free(child_str);
+                            return NULL;
+                        }
+                        buf = new_buf;
                     }
                     memcpy(buf + len, child_str, child_len);
                     len += child_len;
@@ -346,7 +385,12 @@ char* openai_json_dump(OpenAI_JSONNode* node) {
                 size_t val_len = strlen(val_buf);
                 while (len + val_len >= buf_size - 1) {
                     buf_size *= 2;
-                    buf = (char*)realloc(buf, buf_size);
+                    char* new_buf = (char*)realloc(buf, buf_size);
+                    if (!new_buf) {
+                        free(buf);
+                        return NULL;
+                    }
+                    buf = new_buf;
                 }
                 memcpy(buf + len, val_buf, val_len);
                 len += val_len;
@@ -356,7 +400,12 @@ char* openai_json_dump(OpenAI_JSONNode* node) {
                 int written = snprintf(val_buf, sizeof(val_buf), "%g", child->number_value);
                 while (len + written >= buf_size - 1) {
                     buf_size *= 2;
-                    buf = (char*)realloc(buf, buf_size);
+                    char* new_buf = (char*)realloc(buf, buf_size);
+                    if (!new_buf) {
+                        free(buf);
+                        return NULL;
+                    }
+                    buf = new_buf;
                 }
                 memcpy(buf + len, val_buf, written);
                 len += written;
@@ -387,4 +436,63 @@ char* openai_json_dump(OpenAI_JSONNode* node) {
         return result;
     }
     return NULL;
+}
+
+char* openai_json_escape_string(const char* str) {
+    if (!str) return NULL;
+
+    size_t escaped_len = 0;
+    const char* p = str;
+    while (*p) {
+        switch (*p) {
+            case '"':
+            case '\\':
+            case '/':
+                escaped_len += 2;
+                break;
+            case '\n':
+            case '\r':
+            case '\t':
+                escaped_len += 2;
+                break;
+            default:
+                escaped_len++;
+        }
+        p++;
+    }
+
+    char* result = (char*)malloc(escaped_len + 1);
+    if (!result) return NULL;
+
+    char* out = result;
+    p = str;
+    while (*p) {
+        switch (*p) {
+            case '"':
+                *out++ = '\\';
+                *out++ = '"';
+                break;
+            case '\\':
+                *out++ = '\\';
+                *out++ = '\\';
+                break;
+            case '\n':
+                *out++ = '\\';
+                *out++ = 'n';
+                break;
+            case '\r':
+                *out++ = '\\';
+                *out++ = 'r';
+                break;
+            case '\t':
+                *out++ = '\\';
+                *out++ = 't';
+                break;
+            default:
+                *out++ = *p;
+        }
+        p++;
+    }
+    *out = '\0';
+    return result;
 }

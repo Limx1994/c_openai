@@ -90,6 +90,8 @@ target_include_directories(lwip_altcp PUBLIC
 
 target_compile_definitions(lwip_altcp PUBLIC
     LWIP_ALTCP=1
+    LWIP_ALTCP_TLS=1
+    LWIP_ALTCP_TLS_MBEDTLS=1
 )
 
 target_link_libraries(lwip_altcp PUBLIC lwip_core)

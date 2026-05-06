@@ -52,26 +52,41 @@ static char* build_chat_request_body(OpenAI_ChatRequest* req) {
     char* buf = (char*)malloc(buf_size);
     if (!buf) return NULL;
 
+    /* Escape model to prevent JSON injection */
+    char* escaped_model = openai_json_escape_string(req->model ? req->model : "gpt-3.5-turbo");
     int offset = snprintf(buf, buf_size,
-        "{\"model\":\"%s\",\"messages\":[", req->model ? req->model : "gpt-3.5-turbo");
+        "{\"model\":\"%s\",\"messages\":[", escaped_model ? escaped_model : "gpt-3.5-turbo");
+    free(escaped_model);
 
     for (size_t i = 0; i < req->message_count && req->messages; i++) {
         OpenAI_Message* msg = &req->messages[i];
         if (msg->role && msg->content) {
-            int written = snprintf(buf + offset, buf_size - offset,
-                "%s{\"role\":\"%s\",\"content\":\"%s\"}",
-                i > 0 ? "," : "", msg->role, msg->content);
-            offset += written;
+            /* Escape content to prevent JSON injection */
+            char* escaped_content = openai_json_escape_string(msg->content);
+            char* escaped_role = openai_json_escape_string(msg->role);
 
-            if (offset >= (int)buf_size - 1) {
+            /* Calculate required space before writing */
+            size_t msg_len = (escaped_role ? strlen(escaped_role) : strlen(msg->role)) +
+                             (escaped_content ? strlen(escaped_content) : strlen(msg->content)) + 64;
+            while (offset + msg_len >= buf_size) {
                 buf_size *= 2;
                 char* new_buf = (char*)realloc(buf, buf_size);
                 if (!new_buf) {
+                    free(escaped_content);
+                    free(escaped_role);
                     free(buf);
                     return NULL;
                 }
                 buf = new_buf;
             }
+
+            int written = snprintf(buf + offset, buf_size - offset,
+                "%s{\"role\":\"%s\",\"content\":\"%s\"}",
+                i > 0 ? "," : "", escaped_role ? escaped_role : msg->role,
+                escaped_content ? escaped_content : msg->content);
+            offset += written;
+            free(escaped_content);
+            free(escaped_role);
         }
     }
 
@@ -419,12 +434,16 @@ OpenAI_EmbeddingResponse* openai_embeddings_create(OpenAI_Client* client, OpenAI
 
     char* url = OPENAI_API_BASE "/embeddings";
 
-    /* Build request body */
+    /* Build request body - input must be escaped to prevent JSON injection */
+    char* escaped_input = openai_json_escape_string(req->input);
+    char* escaped_model = openai_json_escape_string(req->model ? req->model : "text-embedding-3-small");
     char body[1024];
     snprintf(body, sizeof(body),
         "{\"model\":\"%s\",\"input\":\"%s\"}",
-        req->model ? req->model : "text-embedding-3-small",
-        req->input);
+        escaped_model ? escaped_model : "text-embedding-3-small",
+        escaped_input ? escaped_input : "");
+    free(escaped_input);
+    free(escaped_model);
 
     OpenAI_HTTPRequest http_req = {
         .url = url,

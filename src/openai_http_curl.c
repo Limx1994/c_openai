@@ -18,6 +18,8 @@ static size_t write_callback(void* contents, size_t size, size_t nmemb, void* us
 
     char* ptr = (char*)realloc(mem->data, mem->size + realsize + 1);
     if (!ptr) {
+        free(mem->data);
+        mem->data = NULL;
         return 0;
     }
     mem->data = ptr;
@@ -57,6 +59,11 @@ OpenAI_HTTPResponse* openai_http_request(OpenAI_HTTPRequest* req) {
 
     struct memory_chunk chunk = {0};
     chunk.data = (char*)malloc(1);
+    if (!chunk.data) {
+        curl_easy_cleanup(curl);
+        free(resp);
+        return NULL;
+    }
     chunk.data[0] = '\0';
 
     curl_easy_setopt(curl, CURLOPT_URL, req->url);
@@ -77,8 +84,10 @@ OpenAI_HTTPResponse* openai_http_request(OpenAI_HTTPRequest* req) {
         snprintf(auth_header, sizeof(auth_header), "Authorization: Bearer %s", req->auth_header);
         headers = curl_slist_append(headers, auth_header);
     }
-    headers = curl_slist_append(headers, "Content-Type: application/json");
-    headers = curl_slist_append(headers, "Accept: application/json");
+    if (headers) {
+        headers = curl_slist_append(headers, "Content-Type: application/json");
+        headers = curl_slist_append(headers, "Accept: application/json");
+    }
     if (headers) {
         curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
     }
@@ -151,7 +160,13 @@ OpenAI_HTTPResponse* openai_http_request_stream(OpenAI_HTTPRequest* req) {
 
     OpenAI_StreamBuffer buf = {0};
     buf.data = (char*)malloc(1);
+    if (!buf.data) {
+        curl_easy_cleanup(curl);
+        free(resp);
+        return NULL;
+    }
     buf.data[0] = '\0';
+    buf.capacity = 1;
 
     curl_easy_setopt(curl, CURLOPT_URL, req->url);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, stream_write_callback);

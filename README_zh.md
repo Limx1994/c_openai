@@ -13,6 +13,7 @@
   - Chat Completions（聊天补全）
   - Streaming（流式响应，SSE）
   - Embeddings（文本嵌入）
+- **安全性**：JSON 注入防护、内存安全检查、安全的认证头处理
 
 ## 项目结构
 
@@ -49,7 +50,7 @@ c_openai/
 
 ### 前置条件
 
-- CMake 3.10 或更高
+- CMake 3.18 或更高
 - Git（支持子模块）
 - 所有依赖库均通过 git submodule 集成（libcurl、lwIP、mbedtls）
 
@@ -200,6 +201,19 @@ OpenAI_Client* client = openai_client_new(getenv("OPENAI_API_KEY"));
 | `openai_stream_read(stream, event)` | 从流中读取下一个事件 |
 | `openai_stream_close(stream)` | 关闭流并释放资源 |
 
+### JSON 工具
+
+| 函数 | 描述 |
+|------|------|
+| `openai_json_parse(json_string)` | 解析 JSON 字符串为 DOM |
+| `openai_json_free(node)` | 释放 JSON DOM |
+| `openai_json_dump(node)` | 将 JSON DOM 转换为字符串 |
+| `openai_json_escape_string(str)` | 转义 JSON 字符串（防止注入） |
+| `openai_json_get_string(parent, key)` | 从对象获取字符串值 |
+| `openai_json_get_number(parent, key)` | 从对象获取数字值 |
+| `openai_json_get_object(parent, key)` | 按键获取子对象 |
+| `openai_json_get_array_item(parent, index)` | 按索引获取数组项 |
+
 ## 错误处理
 
 ```c
@@ -220,6 +234,20 @@ const char* err_str = openai_error_str(OPENAI_ERR_NETWORK);
 - `OPENAI_ERR_SERVER` - 服务器错误
 - `OPENAI_ERR_BUFFER_EMPTY` - 缓冲区为空（流式响应）
 - `OPENAI_ERR_EOF` - 流结束（流式响应）
+
+## 安全特性
+
+本库包含以下安全增强：
+
+1. **JSON 注入防护**：`openai_json_escape_string()` 函数转义特殊字符（`"`、`\`、`/`、`\n`、`\r`、`\t`），在嵌入用户内容时防止 JSON 注入攻击。适用于 Chat Completions 和 Embeddings 请求中的 model、role 和 content 字段。
+
+2. **内存安全**：所有 `malloc()`、`calloc()` 和 `realloc()` 调用都包含 NULL 指针检查，防止分配失败时崩溃。
+
+3. **安全的认证头处理**：仅在存在有效 API key 时才添加 Authorization 头，防止 "Bearer (null)" 头。
+
+4. **缓冲区溢出保护**：动态缓冲区扩展在写入前进行正确的大小检查，`snprintf` 偏移量计算也经过验证。
+
+5. **lwIP 后端流式请求支持**：libcurl 和 lwIP 后端现在都支持流式（SSE）请求，可在嵌入式设备上实现实时响应处理。
 
 ## 平台说明
 

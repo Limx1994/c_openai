@@ -18,6 +18,7 @@ if(OPENAI_HTTP_BACKEND EQUAL OPENAI_BACKEND_LWIP)
 else()
     # libcurl is included via third_party/libcurl submodule
     target_sources(openai_client PRIVATE openai_http_curl.c)
+    target_link_libraries(openai_client PUBLIC curl)
 endif()
 
 target_compile_options(openai_client PRIVATE -Wall -Wextra)
