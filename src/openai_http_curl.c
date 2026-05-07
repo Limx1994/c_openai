@@ -186,11 +186,9 @@ OpenAI_HTTPResponse* openai_http_request_stream(OpenAI_HTTPRequest* req) {
         snprintf(auth_header, sizeof(auth_header), "Authorization: Bearer %s", req->auth_header);
         headers = curl_slist_append(headers, auth_header);
     }
-    headers = curl_slist_append(headers, "Content-Type: application/json");
-    /* For streaming, we accept text/event-stream */
-    headers = curl_slist_append(headers, "Accept: text/event-stream");
     if (headers) {
-        curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+        headers = curl_slist_append(headers, "Content-Type: application/json");
+        headers = curl_slist_append(headers, "Accept: text/event-stream");
     }
 
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, OPENAI_TIMEOUT);

@@ -61,6 +61,7 @@ static const char* openai_json_parse_number(const char* p, double* out) {
 static const char* openai_json_parse_value(const char* p, OpenAI_JSONNode* node);
 
 static const char* openai_json_parse_object(const char* p, OpenAI_JSONNode* parent) {
+    if (!parent) return p;
     if (*p != '{') return p;
     p++;
     p = openai_json_skip_space(p);
@@ -93,6 +94,7 @@ static const char* openai_json_parse_object(const char* p, OpenAI_JSONNode* pare
 }
 
 static const char* openai_json_parse_array(const char* p, OpenAI_JSONNode* parent) {
+    if (!parent) return p;
     if (*p != '[') return p;
     p++;
     p = openai_json_skip_space(p);
