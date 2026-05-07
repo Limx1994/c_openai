@@ -249,6 +249,7 @@ OpenAI_HTTPResponse* openai_http_request(OpenAI_HTTPRequest* req) {
         }
 
         while (1) {
+            /* Ensure we have space before reading */
             if (buf_size >= buf_capacity - 1) {
                 buf_capacity *= 2;
                 char* new_buf = (char*)realloc(buf, buf_capacity);
@@ -261,7 +262,8 @@ OpenAI_HTTPResponse* openai_http_request(OpenAI_HTTPRequest* req) {
                 buf = new_buf;
             }
 
-            int received = altcp_read(pcb, buf + buf_size, buf_capacity - buf_size - 1);
+            int to_read = (int)(buf_capacity - buf_size - 1);
+            int received = altcp_read(pcb, buf + buf_size, to_read);
             if (received <= 0) break;
             buf_size += received;
             buf[buf_size] = '\0';
@@ -389,6 +391,7 @@ OpenAI_HTTPResponse* openai_http_request(OpenAI_HTTPRequest* req) {
     }
 
     while (1) {
+        /* Ensure we have space before reading */
         if (buf_size >= buf_capacity - 1) {
             buf_capacity *= 2;
             char* new_buf = (char*)realloc(buf, buf_capacity);
@@ -402,7 +405,8 @@ OpenAI_HTTPResponse* openai_http_request(OpenAI_HTTPRequest* req) {
             buf = new_buf;
         }
 
-        int received = recv(sock, buf + buf_size, buf_capacity - buf_size - 1, 0);
+        int to_read = (int)(buf_capacity - buf_size - 1);
+        int received = recv(sock, buf + buf_size, to_read, 0);
         if (received <= 0) break;
         buf_size += received;
         buf[buf_size] = '\0';
@@ -577,6 +581,7 @@ OpenAI_HTTPResponse* openai_http_request_stream(OpenAI_HTTPRequest* req) {
         }
 
         while (1) {
+            /* Ensure we have space before reading */
             if (buf_size >= buf_capacity - 1) {
                 buf_capacity *= 2;
                 char* new_buf = (char*)realloc(buf, buf_capacity);
@@ -589,7 +594,8 @@ OpenAI_HTTPResponse* openai_http_request_stream(OpenAI_HTTPRequest* req) {
                 buf = new_buf;
             }
 
-            int received = altcp_read(pcb, buf + buf_size, buf_capacity - buf_size - 1);
+            int to_read = (int)(buf_capacity - buf_size - 1);
+            int received = altcp_read(pcb, buf + buf_size, to_read);
             if (received <= 0) break;
             buf_size += received;
             buf[buf_size] = '\0';
@@ -717,6 +723,7 @@ OpenAI_HTTPResponse* openai_http_request_stream(OpenAI_HTTPRequest* req) {
     }
 
     while (1) {
+        /* Ensure we have space before reading */
         if (buf_size >= buf_capacity - 1) {
             buf_capacity *= 2;
             char* new_buf = (char*)realloc(buf, buf_capacity);
@@ -730,7 +737,8 @@ OpenAI_HTTPResponse* openai_http_request_stream(OpenAI_HTTPRequest* req) {
             buf = new_buf;
         }
 
-        int received = recv(sock, buf + buf_size, buf_capacity - buf_size - 1, 0);
+        int to_read = (int)(buf_capacity - buf_size - 1);
+        int received = recv(sock, buf + buf_size, to_read, 0);
         if (received <= 0) break;
         buf_size += received;
         buf[buf_size] = '\0';

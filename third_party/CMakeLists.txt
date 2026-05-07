@@ -5,7 +5,7 @@
 #   git clone --recursive https://github.com/Limx1994/c_openai.git
 #   Or after clone: git submodule update --init --recursive
 
-cmake_minimum_required(VERSION 3.10)
+cmake_minimum_required(VERSION 3.18)
 
 # ================================
 # lwIP Configuration
