@@ -15,12 +15,16 @@ OpenAI_Client* openai_client_new(const char* api_key) {
     if (!api_key) return NULL;
 
     OpenAI_Client* client = (OpenAI_Client*)malloc(sizeof(OpenAI_Client));
-    if (!client) return NULL;
+    if (!client) {
+        OPENAI_LOG_ERROR("Failed to allocate client structure");
+        return NULL;
+    }
 
     memset(client, 0, sizeof(OpenAI_Client));
 
     client->api_key = (char*)malloc(strlen(api_key) + 1);
     if (!client->api_key) {
+        OPENAI_LOG_ERROR("Failed to allocate api_key string");
         free(client);
         return NULL;
     }
@@ -210,6 +214,7 @@ OpenAI_ChatResponse* openai_chat_create(OpenAI_Client* client, OpenAI_ChatReques
 
     OpenAI_ChatResponse* resp = (OpenAI_ChatResponse*)calloc(1, sizeof(OpenAI_ChatResponse));
     if (!resp) {
+        OPENAI_LOG_ERROR("Failed to allocate chat response structure");
         openai_json_free(json);
         return NULL;
     }
@@ -589,6 +594,7 @@ OpenAI_EmbeddingResponse* openai_embeddings_create(OpenAI_Client* client, OpenAI
 
     OpenAI_EmbeddingResponse* resp = (OpenAI_EmbeddingResponse*)calloc(1, sizeof(OpenAI_EmbeddingResponse));
     if (!resp) {
+        OPENAI_LOG_ERROR("Failed to allocate embedding response structure");
         openai_json_free(json);
         return NULL;
     }
