@@ -411,7 +411,7 @@ static int parse_sse_line(const char* line, size_t len, char* output, size_t out
     return -1;
 }
 
-static int find_line_start(const char* buffer, size_t size, size_t start) {
+static size_t find_line_start(const char* buffer, size_t size, size_t start) {
     while (start < size) {
         if (buffer[start] != '\n' && buffer[start] != '\r') {
             break;
@@ -421,7 +421,7 @@ static int find_line_start(const char* buffer, size_t size, size_t start) {
     return start;
 }
 
-static int find_line_end(const char* buffer, size_t size, size_t start) {
+static size_t find_line_end(const char* buffer, size_t size, size_t start) {
     while (start < size) {
         if (buffer[start] == '\n' || buffer[start] == '\r') {
             return start;
@@ -505,8 +505,8 @@ int openai_stream_read(void* stream, OpenAI_StreamEvent* event) {
     char line_buffer[1024];
 
     while (handle->parse_pos < handle->buffer_size) {
-        int line_start = find_line_start(handle->buffer, handle->buffer_size, handle->parse_pos);
-        int line_end = find_line_end(handle->buffer, handle->buffer_size, line_start);
+        size_t line_start = find_line_start(handle->buffer, handle->buffer_size, handle->parse_pos);
+        size_t line_end = find_line_end(handle->buffer, handle->buffer_size, line_start);
 
         size_t line_len = line_end - line_start;
         if (line_len >= sizeof(line_buffer)) {
