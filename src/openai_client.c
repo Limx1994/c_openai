@@ -503,7 +503,6 @@ int openai_stream_read(void* stream, OpenAI_StreamEvent* event) {
     memset(event, 0, sizeof(OpenAI_StreamEvent));
 
     char line_buffer[1024];
-    int found_content = 0;
 
     while (handle->parse_pos < handle->buffer_size) {
         int line_start = find_line_start(handle->buffer, handle->buffer_size, handle->parse_pos);
