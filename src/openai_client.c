@@ -9,6 +9,7 @@
 
 struct OpenAI_Client {
     char* api_key;
+    char* base_url;
 };
 
 static int s_client_count = 0;
@@ -59,9 +60,32 @@ OpenAI_Client* openai_client_new(const char* api_key) {
     return client;
 }
 
+int openai_client_set_base_url(OpenAI_Client* client, const char* base_url) {
+    if (!client) return -1;
+
+    /* Free existing base_url if any */
+    if (client->base_url) {
+        free(client->base_url);
+        client->base_url = NULL;
+    }
+
+    /* Set new base_url if provided */
+    if (base_url) {
+        client->base_url = (char*)malloc(strlen(base_url) + 1);
+        if (!client->base_url) {
+            OPENAI_LOG_ERROR("Failed to allocate base_url string");
+            return -1;
+        }
+        strcpy(client->base_url, base_url);
+    }
+
+    return 0;
+}
+
 void openai_client_free(OpenAI_Client* client) {
     if (client) {
         if (client->api_key) free(client->api_key);
+        if (client->base_url) free(client->base_url);
         free(client);
         openai_http_cleanup();
         s_client_count--;
@@ -71,6 +95,11 @@ void openai_client_free(OpenAI_Client* client) {
 
 const char* openai_version(void) {
     return OPENAI_VERSION;
+}
+
+/* Helper function to get effective base URL */
+static const char* get_effective_base_url(OpenAI_Client* client) {
+    return client->base_url ? client->base_url : OPENAI_API_BASE;
 }
 
 static char* build_chat_request_body(OpenAI_ChatRequest* req) {
@@ -206,7 +235,10 @@ static char* build_chat_request_body(OpenAI_ChatRequest* req) {
 OpenAI_ChatResponse* openai_chat_create(OpenAI_Client* client, OpenAI_ChatRequest* req) {
     if (!client || !req) return NULL;
 
-    char* url = OPENAI_API_BASE "/chat/completions";
+    const char* base_url = get_effective_base_url(client);
+    char url[512];
+    snprintf(url, sizeof(url), "%s/chat/completions", base_url);
+
     OPENAI_LOG_INFO("Sending chat request to %s, model=%s", url, req->model ? req->model : "default");
 
     char* body = build_chat_request_body(req);
@@ -434,7 +466,10 @@ static size_t find_line_end(const char* buffer, size_t size, size_t start) {
 void* openai_chat_create_stream(OpenAI_Client* client, OpenAI_ChatRequest* req) {
     if (!client || !req) return NULL;
 
-    char* url = OPENAI_API_BASE "/chat/completions";
+    const char* base_url = get_effective_base_url(client);
+    char url[512];
+    snprintf(url, sizeof(url), "%s/chat/completions", base_url);
+
     OPENAI_LOG_INFO("Sending streaming chat request to %s, model=%s", url, req->model ? req->model : "default");
 
     /* Create a temporary copy of req with stream=1 instead of mutating caller's req.
@@ -589,7 +624,10 @@ void openai_stream_event_free(OpenAI_StreamEvent* event) {
 OpenAI_EmbeddingResponse* openai_embeddings_create(OpenAI_Client* client, OpenAI_EmbeddingRequest* req) {
     if (!client || !req || !req->input) return NULL;
 
-    char* url = OPENAI_API_BASE "/embeddings";
+    const char* base_url = get_effective_base_url(client);
+    char url[512];
+    snprintf(url, sizeof(url), "%s/embeddings", base_url);
+
     OPENAI_LOG_INFO("Sending embedding request to %s, model=%s", url, req->model ? req->model : "default");
 
     /* Build request body - input must be escaped to prevent JSON injection */

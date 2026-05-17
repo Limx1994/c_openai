@@ -32,6 +32,17 @@ OpenAI_Client* openai_client_new(const char* api_key);
  */
 void openai_client_free(OpenAI_Client* client);
 
+/**
+ * @brief Set custom API base URL
+ * @param client Client handle
+ * @param base_url Custom base URL (e.g., "https://my-proxy.com/v1")
+ * @return 0 on success, -1 on failure
+ *
+ * If not called, defaults to OPENAI_API_BASE.
+ * Pass NULL to reset to default.
+ */
+int openai_client_set_base_url(OpenAI_Client* client, const char* base_url);
+
 /* Chat Completions API */
 
 /**
