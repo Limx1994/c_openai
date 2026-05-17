@@ -39,6 +39,7 @@ static const char* openai_json_parse_string(const char* p, char** out) {
                 } else {
                     /* Malformed \u escape, count as-is */
                     unescaped_len += 2;
+                    scan++;  /* advance past 'u' to avoid double-counting */
                 }
             } else {
                 unescaped_len++;
