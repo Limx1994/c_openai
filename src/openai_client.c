@@ -46,7 +46,12 @@ OpenAI_Client* openai_client_new(const char* api_key) {
     }
     strcpy(client->api_key, api_key);
 
-    openai_http_init();
+    if (openai_http_init() != 0) {
+        OPENAI_LOG_ERROR("HTTP subsystem initialization failed");
+        free(client->api_key);
+        free(client);
+        return NULL;
+    }
     s_client_count++;
 
     OPENAI_LOG_DEBUG("Client created");
