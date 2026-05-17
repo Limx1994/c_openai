@@ -11,8 +11,24 @@ struct OpenAI_Client {
     char* api_key;
 };
 
+static int s_client_count = 0;
+
+/**
+ * @brief Create a new OpenAI client
+ * @param api_key Your OpenAI API key (e.g., "sk-...")
+ * @return Client handle, or NULL on failure
+ *
+ * IMPORTANT: Only one client instance may exist at a time.
+ * Creating a new client before freeing the previous one will
+ * cause undefined behavior.
+ */
 OpenAI_Client* openai_client_new(const char* api_key) {
     if (!api_key) return NULL;
+
+    if (s_client_count > 0) {
+        OPENAI_LOG_ERROR("Only one client instance may exist at a time");
+        return NULL;
+    }
 
     OpenAI_Client* client = (OpenAI_Client*)malloc(sizeof(OpenAI_Client));
     if (!client) {
@@ -31,6 +47,7 @@ OpenAI_Client* openai_client_new(const char* api_key) {
     strcpy(client->api_key, api_key);
 
     openai_http_init();
+    s_client_count++;
 
     OPENAI_LOG_DEBUG("Client created");
 
@@ -42,6 +59,7 @@ void openai_client_free(OpenAI_Client* client) {
         if (client->api_key) free(client->api_key);
         free(client);
         openai_http_cleanup();
+        s_client_count--;
         OPENAI_LOG_DEBUG("Client freed");
     }
 }
