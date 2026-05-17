@@ -140,6 +140,19 @@ static void* openai_http_connect(const char* host, int port, int is_https) {
 OpenAI_HTTPResponse* openai_http_request(OpenAI_HTTPRequest* req) {
     if (!req || !req->url) return NULL;
 
+    /* TODO: HTTP status code to OpenAI_ErrorCode mapping
+     *
+     * The following HTTP status codes should eventually map to specific error codes:
+     *   401 -> OPENAI_ERR_AUTH        (Authentication failed)
+     *   429 -> OPENAI_ERR_RATE_LIMIT  (Rate limit exceeded)
+     *   500, 502, 503, 504 -> OPENAI_ERR_SERVER (Server error)
+     *
+     * Current implementation returns status_code in the response struct for the
+     * caller to map. Full integration requires changing the return type or adding
+     * an error code output parameter to this function -- a larger refactor that
+     * should be done separately.
+     */
+
     char host[256] = {0};
     char path[512] = {0};
     int port = 443;
