@@ -207,7 +207,7 @@ OpenAI_Client* client = openai_client_new(getenv("OPENAI_API_KEY"));
 |----------|-------------|
 | `openai_json_parse(json_string)` | Parse JSON string into DOM |
 | `openai_json_free(node)` | Free JSON DOM |
-| `openai_json_dump(node)` | Convert JSON DOM to string |
+| `openai_json_dump(node)` | Convert JSON DOM to string (deprecated) |
 | `openai_json_escape_string(str)` | Escape string for JSON (prevents injection) |
 | `openai_json_get_string(parent, key)` | Get string value from object |
 | `openai_json_get_number(parent, key)` | Get number value from object |
