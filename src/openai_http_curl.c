@@ -148,7 +148,10 @@ static size_t stream_write_callback(void* contents, size_t size, size_t nmemb, v
         size_t new_cap = buf->capacity == 0 ? 4096 : buf->capacity * 2;
         while (new_cap < buf->size + realsize + 1) new_cap *= 2;
         char* new_data = (char*)realloc(buf->data, new_cap);
-        if (!new_data) return 0;
+        if (!new_data) {
+            OPENAI_LOG_ERROR("stream_write_callback: realloc failed, size=%zu", new_cap);
+            return 0;
+        }
         buf->data = new_data;
         buf->capacity = new_cap;
     }
