@@ -169,6 +169,16 @@ export OPENAI_API_KEY=sk-your-key-here
 OpenAI_Client* client = openai_client_new(getenv("OPENAI_API_KEY"));
 ```
 
+### 自定义 API 基础 URL
+
+用于 Azure OpenAI、代理服务器或自定义端点：
+
+```c
+OpenAI_Client* client = openai_client_new("sk-your-key-here");
+openai_client_set_base_url(client, "https://your-proxy.com/v1");
+// 所有后续 API 调用将使用此基础 URL
+```
+
 ## API 参考
 
 ### 客户端生命周期
@@ -177,6 +187,7 @@ OpenAI_Client* client = openai_client_new(getenv("OPENAI_API_KEY"));
 |------|------|
 | `openai_client_new(api_key)` | 创建新客户端 |
 | `openai_client_free(client)` | 释放客户端和资源 |
+| `openai_client_set_base_url(client, url)` | 设置自定义 API 基础 URL（用于 Azure、代理服务器等） |
 | `openai_version()` | 获取库版本 |
 
 ### 聊天补全
