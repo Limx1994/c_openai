@@ -169,6 +169,16 @@ Or pass it directly in code:
 OpenAI_Client* client = openai_client_new(getenv("OPENAI_API_KEY"));
 ```
 
+### Custom API Base URL
+
+For Azure OpenAI, proxy servers, or custom endpoints:
+
+```c
+OpenAI_Client* client = openai_client_new("sk-your-key-here");
+openai_client_set_base_url(client, "https://your-proxy.com/v1");
+// All subsequent API calls will use this base URL
+```
+
 ## API Reference
 
 ### Client Lifecycle
@@ -177,6 +187,7 @@ OpenAI_Client* client = openai_client_new(getenv("OPENAI_API_KEY"));
 |----------|-------------|
 | `openai_client_new(api_key)` | Create new client |
 | `openai_client_free(client)` | Free client and resources |
+| `openai_client_set_base_url(client, url)` | Set custom API base URL (e.g., for Azure, proxies) |
 | `openai_version()` | Get library version |
 
 ### Chat Completions
