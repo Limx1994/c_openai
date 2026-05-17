@@ -19,6 +19,7 @@ static size_t write_callback(void* contents, size_t size, size_t nmemb, void* us
 
     char* ptr = (char*)realloc(mem->data, mem->size + realsize + 1);
     if (!ptr) {
+        OPENAI_LOG_ERROR("write_callback: realloc failed, size=%zu", mem->size + realsize + 1);
         free(mem->data);
         mem->data = NULL;
         return 0;
@@ -65,6 +66,7 @@ OpenAI_HTTPResponse* openai_http_request(OpenAI_HTTPRequest* req) {
 
     OpenAI_HTTPResponse* resp = (OpenAI_HTTPResponse*)calloc(1, sizeof(OpenAI_HTTPResponse));
     if (!resp) {
+        OPENAI_LOG_ERROR("Failed to allocate HTTP response structure");
         curl_easy_cleanup(curl);
         return NULL;
     }
@@ -72,6 +74,7 @@ OpenAI_HTTPResponse* openai_http_request(OpenAI_HTTPRequest* req) {
     struct memory_chunk chunk = {0};
     chunk.data = (char*)malloc(1);
     if (!chunk.data) {
+        OPENAI_LOG_ERROR("Failed to allocate HTTP response buffer");
         curl_easy_cleanup(curl);
         free(resp);
         return NULL;
@@ -169,6 +172,7 @@ OpenAI_HTTPResponse* openai_http_request_stream(OpenAI_HTTPRequest* req) {
 
     OpenAI_HTTPResponse* resp = (OpenAI_HTTPResponse*)calloc(1, sizeof(OpenAI_HTTPResponse));
     if (!resp) {
+        OPENAI_LOG_ERROR("Failed to allocate stream response structure");
         curl_easy_cleanup(curl);
         return NULL;
     }
@@ -176,6 +180,7 @@ OpenAI_HTTPResponse* openai_http_request_stream(OpenAI_HTTPRequest* req) {
     OpenAI_StreamBuffer buf = {0};
     buf.data = (char*)malloc(1);
     if (!buf.data) {
+        OPENAI_LOG_ERROR("Failed to allocate stream buffer");
         curl_easy_cleanup(curl);
         free(resp);
         return NULL;
