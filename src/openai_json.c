@@ -519,8 +519,8 @@ char* openai_json_escape_string(const char* str) {
                 escaped_len += 2;
                 break;
             default:
-                if ((unsigned char)*p < 0x20) {
-                    /* Control character: \u00XX format */
+                if ((unsigned char)*p < 0x20 || (unsigned char)*p == 0x7F) {
+                    /* Control character (RFC 8259: U+0000-U+001F and U+007F): \u00XX format */
                     escaped_len += 6;
                 } else {
                     escaped_len++;
@@ -565,8 +565,8 @@ char* openai_json_escape_string(const char* str) {
                 *out++ = 'f';
                 break;
             default:
-                if ((unsigned char)*p < 0x20) {
-                    /* Control character: \u00XX format */
+                if ((unsigned char)*p < 0x20 || (unsigned char)*p == 0x7F) {
+                    /* Control character (RFC 8259: U+0000-U+001F and U+007F): \u00XX format */
                     snprintf(out, 7, "\\u%04x", (unsigned char)*p);
                     out += 6;
                 } else {
