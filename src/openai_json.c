@@ -31,8 +31,15 @@ static const char* openai_json_parse_string(const char* p, char** out) {
             if (*scan == '\0') break;
             /* Escaped char counts as 1 (except \\ and \uXXXX) */
             if (*scan == 'u') {
-                unescaped_len += 6; /* \uXXXX outputs: \, u, + 4 hex digits */
-                scan += 4;
+                /* Check if we have at least 4 more characters for \uXXXX */
+                if (*(scan+1) != '\0' && *(scan+2) != '\0' &&
+                    *(scan+3) != '\0' && *(scan+4) != '\0') {
+                    unescaped_len += 6; /* \uXXXX outputs: \, u, + 4 hex digits */
+                    scan += 4;
+                } else {
+                    /* Malformed \u escape, count as-is */
+                    unescaped_len += 2;
+                }
             } else {
                 unescaped_len++;
                 scan++;
