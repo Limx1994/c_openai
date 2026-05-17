@@ -433,12 +433,13 @@ static int find_line_end(const char* buffer, size_t size, size_t start) {
 void* openai_chat_create_stream(OpenAI_Client* client, OpenAI_ChatRequest* req) {
     if (!client || !req) return NULL;
 
-    int orig_stream = req->stream;
-    req->stream = 1;
+    /* Create a temporary copy of req with stream=1 instead of mutating caller's req.
+     * This avoids a data race when multiple threads use the same req object. */
+    OpenAI_ChatRequest stream_req = *req;
+    stream_req.stream = 1;
 
     char* url = OPENAI_API_BASE "/chat/completions";
-    char* body = build_chat_request_body(req);
-    req->stream = orig_stream;
+    char* body = build_chat_request_body(&stream_req);
     if (!body) {
         OPENAI_LOG_ERROR("Failed to build streaming request body");
         return NULL;
