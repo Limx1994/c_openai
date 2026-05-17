@@ -207,7 +207,7 @@ OpenAI_Client* client = openai_client_new(getenv("OPENAI_API_KEY"));
 |------|------|
 | `openai_json_parse(json_string)` | 解析 JSON 字符串为 DOM |
 | `openai_json_free(node)` | 释放 JSON DOM |
-| `openai_json_dump(node)` | 将 JSON DOM 转换为字符串 |
+| `openai_json_dump(node)` | 将 JSON DOM 转换为字符串（已弃用） |
 | `openai_json_escape_string(str)` | 转义 JSON 字符串（防止注入） |
 | `openai_json_get_string(parent, key)` | 从对象获取字符串值 |
 | `openai_json_get_number(parent, key)` | 从对象获取数字值 |
