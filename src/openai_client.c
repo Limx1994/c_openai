@@ -185,6 +185,18 @@ static char* build_chat_request_body(OpenAI_ChatRequest* req) {
     }
 
     /* Close messages array and object */
+    /* Ensure buffer has space for closing characters */
+    size_t closing_len = strlen("],\"stream\":true}");
+    while (offset + closing_len >= buf_size - 1) {
+        buf_size *= 2;
+        char* new_buf = (char*)realloc(buf, buf_size);
+        if (!new_buf) {
+            free(buf);
+            return NULL;
+        }
+        buf = new_buf;
+    }
+
     snprintf(buf + offset, buf_size - offset, "],\"stream\":%s}",
         req->stream ? "true" : "false");
 
