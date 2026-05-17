@@ -4,27 +4,10 @@
 #include <ctype.h>
 
 /* cJSON wrapper for OpenAI */
-
-typedef struct OpenAI_JSONNode OpenAI_JSONNode;
-
-struct OpenAI_JSONNode {
-    char* key;
-    char* string_value;
-    double number_value;
-    int is_number;
-    int is_array;
-    int is_object;
-    void* children;  /* OpenAI_JSONNode* array or cJSON* */
-    void* next;
-    int child_count;
-};
+#include "openai_json.h"
 
 static int openai_json_is_space(char c) {
     return c == ' ' || c == '\n' || c == '\r' || c == '\t';
-}
-
-static int openai_json_is_delim(char c) {
-    return c == ',' || c == ':' || c == '}' || c == ']';
 }
 
 static const char* openai_json_skip_space(const char* p) {
@@ -38,15 +21,65 @@ static const char* openai_json_parse_string(const char* p, char** out) {
         return p;
     }
     p++;
-    const char* start = p;
-    while (*p && *p != '"') {
-        if (*p == '\\') p++;
-        p++;
+
+    /* First pass: count unescaped length */
+    const char* scan = p;
+    size_t unescaped_len = 0;
+    while (*scan && *scan != '"') {
+        if (*scan == '\\') {
+            scan++;
+            if (*scan == '\0') break;
+            /* Escaped char counts as 1 (except \\ and \uXXXX) */
+            if (*scan == 'u') {
+                unescaped_len += 6; /* \uXXXX outputs: \, u, + 4 hex digits */
+                scan += 4;
+            } else {
+                unescaped_len++;
+                scan++;
+            }
+        } else {
+            unescaped_len++;
+            scan++;
+        }
     }
-    size_t len = p - start;
-    char* result = (char*)malloc(len + 1);
-    memcpy(result, start, len);
-    result[len] = '\0';
+
+    /* Second pass: copy and unescape */
+    char* result = (char*)malloc(unescaped_len + 1);
+    if (!result) {
+        *out = NULL;
+        return scan;
+    }
+
+    char* out_ptr = result;
+    while (*p && *p != '"') {
+        if (*p == '\\') {
+            p++;
+            if (*p == '\0') break;
+            switch (*p) {
+                case '"':  *out_ptr++ = '"';  break;
+                case '\\': *out_ptr++ = '\\'; break;
+                case '/':  *out_ptr++ = '/';  break;
+                case 'n':  *out_ptr++ = '\n'; break;
+                case 'r':  *out_ptr++ = '\r'; break;
+                case 't':  *out_ptr++ = '\t'; break;
+                case 'b':  *out_ptr++ = '\b'; break;
+                case 'f':  *out_ptr++ = '\f'; break;
+                case 'u':  /* \uXXXX - copy as-is for simplicity */
+                    *out_ptr++ = '\\';
+                    *out_ptr++ = 'u';
+                    for (int i = 0; i < 4 && *(p+1) != '\0'; i++) {
+                        p++;
+                        *out_ptr++ = *p;
+                    }
+                    break;
+                default:   *out_ptr++ = *p;   break;
+            }
+            p++;
+        } else {
+            *out_ptr++ = *p++;
+        }
+    }
+    *out_ptr = '\0';
     *out = result;
     if (*p == '"') p++;
     return p;
@@ -55,6 +88,10 @@ static const char* openai_json_parse_string(const char* p, char** out) {
 static const char* openai_json_parse_number(const char* p, double* out) {
     char* end;
     *out = strtod(p, &end);
+    if (end == p) {
+        *out = 0;
+        return p + 1; /* skip offending char to prevent infinite loop */
+    }
     return end;
 }
 
@@ -154,6 +191,7 @@ static const char* openai_json_parse_value(const char* p, OpenAI_JSONNode* node)
 OpenAI_JSONNode* openai_json_parse(const char* json_string) {
     if (!json_string) return NULL;
     OpenAI_JSONNode* root = (OpenAI_JSONNode*)calloc(1, sizeof(OpenAI_JSONNode));
+    if (!root) return NULL;
     openai_json_parse_value(json_string, root);
     return root;
 }
@@ -164,8 +202,6 @@ void openai_json_free(OpenAI_JSONNode* node) {
     OpenAI_JSONNode* child = (OpenAI_JSONNode*)node->children;
     while (child) {
         OpenAI_JSONNode* next = child->next;
-        if (child->key) free(child->key);
-        if (child->string_value) free(child->string_value);
         openai_json_free(child);
         child = next;
     }
@@ -227,10 +263,6 @@ OpenAI_JSONNode* openai_json_get_array_item(OpenAI_JSONNode* parent, size_t inde
     return NULL;
 }
 
-size_t openai_json_get_array_size(OpenAI_JSONNode* parent) {
-    if (!parent || !parent->is_array) return 0;
-    return parent->child_count;
-}
 
 char* openai_json_dump(OpenAI_JSONNode* node) {
     if (!node) return NULL;
@@ -238,6 +270,7 @@ char* openai_json_dump(OpenAI_JSONNode* node) {
     if (node->is_object) {
         size_t buf_size = 256;
         char* buf = (char*)malloc(buf_size);
+        if (!buf) return NULL;
         size_t len = 0;
         buf[0] = '{';
         buf[1] = '\0';
@@ -298,8 +331,10 @@ char* openai_json_dump(OpenAI_JSONNode* node) {
                     free(child_str);
                 }
             } else if (child->string_value) {
+                char* escaped_val = openai_json_escape_string(child->string_value);
                 char val_buf[1024];
-                snprintf(val_buf, sizeof(val_buf), "\"%s\"", child->string_value);
+                snprintf(val_buf, sizeof(val_buf), "\"%s\"", escaped_val ? escaped_val : child->string_value);
+                free(escaped_val);
                 size_t val_len = strlen(val_buf);
                 while (len + val_len >= buf_size - 1) {
                     buf_size *= 2;
@@ -333,12 +368,19 @@ char* openai_json_dump(OpenAI_JSONNode* node) {
             child = (OpenAI_JSONNode*)child->next;
         }
 
+        if (len + 2 >= buf_size) {
+            buf_size = len + 3;
+            char* new_buf = (char*)realloc(buf, buf_size);
+            if (!new_buf) { free(buf); return NULL; }
+            buf = new_buf;
+        }
         buf[len++] = '}';
         buf[len] = '\0';
         return buf;
     } else if (node->is_array) {
         size_t buf_size = 256;
         char* buf = (char*)malloc(buf_size);
+        if (!buf) return NULL;
         size_t len = 0;
         buf[0] = '[';
         buf[1] = '\0';
@@ -382,8 +424,10 @@ char* openai_json_dump(OpenAI_JSONNode* node) {
                     free(child_str);
                 }
             } else if (child->string_value) {
+                char* escaped_val = openai_json_escape_string(child->string_value);
                 char val_buf[1024];
-                snprintf(val_buf, sizeof(val_buf), "\"%s\"", child->string_value);
+                snprintf(val_buf, sizeof(val_buf), "\"%s\"", escaped_val ? escaped_val : child->string_value);
+                free(escaped_val);
                 size_t val_len = strlen(val_buf);
                 while (len + val_len >= buf_size - 1) {
                     buf_size *= 2;
@@ -417,6 +461,12 @@ char* openai_json_dump(OpenAI_JSONNode* node) {
             child = (OpenAI_JSONNode*)child->next;
         }
 
+        if (len + 2 >= buf_size) {
+            buf_size = len + 3;
+            char* new_buf = (char*)realloc(buf, buf_size);
+            if (!new_buf) { free(buf); return NULL; }
+            buf = new_buf;
+        }
         buf[len++] = ']';
         buf[len] = '\0';
         return buf;
@@ -449,7 +499,6 @@ char* openai_json_escape_string(const char* str) {
         switch (*p) {
             case '"':
             case '\\':
-            case '/':
                 escaped_len += 2;
                 break;
             case '\n':

@@ -30,13 +30,13 @@ typedef struct {
 } OpenAI_HTTPResponse;
 
 /**
- * @brief Initialize HTTP subsystem
+ * @brief Initialize HTTP subsystem (not thread-safe, call once before use)
  * @return 0 on success
  */
 int openai_http_init(void);
 
 /**
- * @brief Cleanup HTTP subsystem
+ * @brief Cleanup HTTP subsystem (not thread-safe, call after all clients freed)
  */
 void openai_http_cleanup(void);
 

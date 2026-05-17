@@ -7,6 +7,13 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 # Options
 option(OPENAI_BUILD_EXAMPLES "Build example programs" ON)
 
+# Backend selection constants
+set(OPENAI_BACKEND_CURL 0)
+set(OPENAI_BACKEND_LWIP 1)
+if(NOT DEFINED OPENAI_HTTP_BACKEND)
+    set(OPENAI_HTTP_BACKEND ${OPENAI_BACKEND_CURL})
+endif()
+
 # Include directories
 include_directories(${CMAKE_SOURCE_DIR}/include)
 include_directories(${CMAKE_SOURCE_DIR}/cJSON)
@@ -28,6 +35,7 @@ endif()
 
 # Main library
 add_library(openai INTERFACE)
+target_link_libraries(openai INTERFACE openai_client)
 target_include_directories(openai INTERFACE
     $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/include>
     $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/cJSON>

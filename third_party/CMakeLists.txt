@@ -97,8 +97,9 @@ target_compile_definitions(lwip_altcp PUBLIC
 target_link_libraries(lwip_altcp PUBLIC lwip_core)
 target_compile_options(lwip_altcp PRIVATE -Wno-unused-parameter -Wno-sign-compare)
 
-# Combined lwip target for convenience
-add_library(lwip ALIAS lwip_socket)
+# Combined lwip target for convenience (includes ALTCP/TLS support)
+add_library(lwip INTERFACE)
+target_link_libraries(lwip INTERFACE lwip_socket lwip_altcp)
 
 # ================================
 # mbedTLS Configuration
@@ -130,6 +131,9 @@ endif()
 target_include_directories(mbedtls INTERFACE
     ${MBEDTLS_DIR}/include
 )
+
+# Link lwip_altcp to mbedtls for TLS support
+target_link_libraries(lwip_altcp PUBLIC mbedtls)
 
 # ================================
 # Export variables for parent CMake

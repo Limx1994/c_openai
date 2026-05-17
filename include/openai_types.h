@@ -12,7 +12,6 @@
 #define OPENAI_ROLE_SYSTEM "system"
 #define OPENAI_ROLE_USER "user"
 #define OPENAI_ROLE_ASSISTANT "assistant"
-#define OPENAI_ROLE_FUNCTION "function"
 
 /**
  * @brief Chat message structure
@@ -79,7 +78,6 @@ typedef struct {
 
 /* Stream event types */
 #define OPENAI_EVENT_CHUNK "chat.completion.chunk"
-#define OPENAI_EVENT_DONE "done"
 
 /**
  * @brief Stream event structure

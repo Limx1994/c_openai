@@ -9,6 +9,17 @@
 #include <stddef.h>
 
 /* JSON node for DOM-style parsing */
+struct OpenAI_JSONNode {
+    char* key;
+    char* string_value;
+    double number_value;
+    int is_number;
+    int is_array;
+    int is_object;
+    void* children;  /* OpenAI_JSONNode* array */
+    void* next;
+    int child_count;
+};
 typedef struct OpenAI_JSONNode OpenAI_JSONNode;
 
 /**
@@ -64,13 +75,6 @@ OpenAI_JSONNode* openai_json_get_object(OpenAI_JSONNode* parent, const char* key
  * @return Array item node, or NULL if not found
  */
 OpenAI_JSONNode* openai_json_get_array_item(OpenAI_JSONNode* parent, size_t index);
-
-/**
- * @brief Get array size
- * @param parent Parent array node
- * @return Number of items in array
- */
-size_t openai_json_get_array_size(OpenAI_JSONNode* parent);
 
 /**
  * @brief Escape string for JSON

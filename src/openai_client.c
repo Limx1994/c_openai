@@ -9,7 +9,6 @@
 
 struct OpenAI_Client {
     char* api_key;
-    char auth_header[256];
 };
 
 OpenAI_Client* openai_client_new(const char* api_key) {
@@ -27,9 +26,9 @@ OpenAI_Client* openai_client_new(const char* api_key) {
     }
     strcpy(client->api_key, api_key);
 
-    snprintf(client->auth_header, sizeof(client->auth_header), "%s", api_key);
-
     openai_http_init();
+
+    OPENAI_LOG_DEBUG("Client created");
 
     return client;
 }
@@ -39,6 +38,7 @@ void openai_client_free(OpenAI_Client* client) {
         if (client->api_key) free(client->api_key);
         free(client);
         openai_http_cleanup();
+        OPENAI_LOG_DEBUG("Client freed");
     }
 }
 
@@ -91,7 +91,7 @@ static char* build_chat_request_body(OpenAI_ChatRequest* req) {
     }
 
     /* Add optional parameters */
-    if (req->temperature > 0) {
+    if (req->temperature >= 0) {
         char temp_buf[64];
         snprintf(temp_buf, sizeof(temp_buf), ",\"temperature\":%g", req->temperature);
         size_t temp_len = strlen(temp_buf);
@@ -125,6 +125,38 @@ static char* build_chat_request_body(OpenAI_ChatRequest* req) {
         offset += tokens_len;
     }
 
+    /* Add top_p parameter */
+    if (req->top_p > 0 && req->top_p < 1.0) {
+        char top_p_buf[64];
+        snprintf(top_p_buf, sizeof(top_p_buf), ",\"top_p\":%g", req->top_p);
+        size_t top_p_len = strlen(top_p_buf);
+        while (offset + top_p_len >= buf_size - 1) {
+            buf_size *= 2;
+            char* new_buf = (char*)realloc(buf, buf_size);
+            if (!new_buf) { free(buf); return NULL; }
+            buf = new_buf;
+        }
+        strcpy(buf + offset, top_p_buf);
+        offset += top_p_len;
+    }
+
+    /* Add stop parameter */
+    if (req->stop) {
+        char* escaped_stop = openai_json_escape_string(req->stop);
+        char stop_buf[512];
+        snprintf(stop_buf, sizeof(stop_buf), ",\"stop\":\"%s\"", escaped_stop ? escaped_stop : req->stop);
+        free(escaped_stop);
+        size_t stop_len = strlen(stop_buf);
+        while (offset + stop_len >= buf_size - 1) {
+            buf_size *= 2;
+            char* new_buf = (char*)realloc(buf, buf_size);
+            if (!new_buf) { free(buf); return NULL; }
+            buf = new_buf;
+        }
+        strcpy(buf + offset, stop_buf);
+        offset += stop_len;
+    }
+
     /* Close messages array and object */
     snprintf(buf + offset, buf_size - offset, "],\"stream\":%s}",
         req->stream ? "true" : "false");
@@ -138,7 +170,10 @@ OpenAI_ChatResponse* openai_chat_create(OpenAI_Client* client, OpenAI_ChatReques
     char* url = OPENAI_API_BASE "/chat/completions";
 
     char* body = build_chat_request_body(req);
-    if (!body) return NULL;
+    if (!body) {
+        OPENAI_LOG_ERROR("Failed to build request body");
+        return NULL;
+    }
 
     OpenAI_HTTPRequest http_req = {
         .url = url,
@@ -151,9 +186,15 @@ OpenAI_ChatResponse* openai_chat_create(OpenAI_Client* client, OpenAI_ChatReques
     OpenAI_HTTPResponse* http_resp = openai_http_request(&http_req);
     free(body);
 
-    if (!http_resp) return NULL;
+    if (!http_resp) {
+        OPENAI_LOG_ERROR("HTTP request failed");
+        return NULL;
+    }
 
     if (http_resp->status_code != 200) {
+        OPENAI_LOG_ERROR("API error: status_code=%ld, body=%.200s",
+            (long)http_resp->status_code,
+            http_resp->body ? http_resp->body : "(null)");
         openai_http_response_free(http_resp);
         return NULL;
     }
@@ -162,7 +203,10 @@ OpenAI_ChatResponse* openai_chat_create(OpenAI_Client* client, OpenAI_ChatReques
     OpenAI_JSONNode* json = openai_json_parse(http_resp->body);
     openai_http_response_free(http_resp);
 
-    if (!json) return NULL;
+    if (!json) {
+        OPENAI_LOG_ERROR("Failed to parse JSON response");
+        return NULL;
+    }
 
     OpenAI_ChatResponse* resp = (OpenAI_ChatResponse*)calloc(1, sizeof(OpenAI_ChatResponse));
     if (!resp) {
@@ -174,20 +218,31 @@ OpenAI_ChatResponse* openai_chat_create(OpenAI_Client* client, OpenAI_ChatReques
     const char* id = openai_json_get_string(json, "id");
     if (id) {
         resp->id = (char*)malloc(strlen(id) + 1);
-        strcpy(resp->id, id);
+        if (resp->id) strcpy(resp->id, id);
     }
 
     const char* model = openai_json_get_string(json, "model");
     if (model) {
         resp->model = (char*)malloc(strlen(model) + 1);
-        strcpy(resp->model, model);
+        if (resp->model) strcpy(resp->model, model);
     }
+
+    const char* object = openai_json_get_string(json, "object");
+    if (object) {
+        resp->object = (char*)malloc(strlen(object) + 1);
+        if (resp->object) strcpy(resp->object, object);
+    }
+
+    resp->created = (long)openai_json_get_number(json, "created");
 
     /* Extract choices */
     OpenAI_JSONNode* choices = openai_json_get_object(json, "choices");
     if (choices && choices->child_count > 0) {
         resp->choice_count = choices->child_count;
         resp->choices = (OpenAI_Choice*)malloc(sizeof(OpenAI_Choice) * resp->choice_count);
+        if (!resp->choices) {
+            resp->choice_count = 0;
+        } else {
         memset(resp->choices, 0, sizeof(OpenAI_Choice) * resp->choice_count);
 
         for (size_t i = 0; i < resp->choice_count; i++) {
@@ -198,16 +253,17 @@ OpenAI_ChatResponse* openai_chat_create(OpenAI_Client* client, OpenAI_ChatReques
                     const char* content = openai_json_get_string(msg, "content");
                     if (content) {
                         resp->choices[i].content = (char*)malloc(strlen(content) + 1);
-                        strcpy(resp->choices[i].content, content);
+                        if (resp->choices[i].content) strcpy(resp->choices[i].content, content);
                     }
                     const char* role = openai_json_get_string(msg, "role");
                     if (role) {
                         resp->choices[i].role = (char*)malloc(strlen(role) + 1);
-                        strcpy(resp->choices[i].role, role);
+                        if (resp->choices[i].role) strcpy(resp->choices[i].role, role);
                     }
                 }
                 resp->choices[i].index = (int)openai_json_get_number(choice, "index");
             }
+        }
         }
     }
 
@@ -238,7 +294,7 @@ OpenAI_ChatResponse* openai_chat_create(OpenAI_Client* client, OpenAI_ChatReques
 
         if (usage_buf[0] != '\0') {
             resp->usage = (char*)malloc(strlen(usage_buf) + 1);
-            strcpy(resp->usage, usage_buf);
+            if (resp->usage) strcpy(resp->usage, usage_buf);
         }
     }
 
@@ -250,6 +306,7 @@ void openai_chat_response_free(OpenAI_ChatResponse* resp) {
     if (resp) {
         if (resp->id) free(resp->id);
         if (resp->model) free(resp->model);
+        if (resp->object) free(resp->object);
         if (resp->usage) free(resp->usage);
         if (resp->choices) {
             for (size_t i = 0; i < resp->choice_count; i++) {
@@ -289,7 +346,7 @@ static int parse_sse_line(const char* line, size_t len, char* output, size_t out
     /* Simple approach: look for "content\":\" ... \"" */
     const char* content_start = strstr(line, "\"content\":\"");
     if (content_start) {
-        content_start += 10; /* skip "\"content\":\"" */
+        content_start += 11; /* skip "\"content\":\"" */
         const char* content_end = strstr(content_start, "\"");
         if (content_end) {
             size_t content_len = content_end - content_start;
@@ -305,7 +362,7 @@ static int parse_sse_line(const char* line, size_t len, char* output, size_t out
 
 static int find_line_start(const char* buffer, size_t size, size_t start) {
     while (start < size) {
-        if (buffer[start] == '\n' || buffer[start] == '\r') {
+        if (buffer[start] != '\n' && buffer[start] != '\r') {
             break;
         }
         start++;
@@ -326,11 +383,16 @@ static int find_line_end(const char* buffer, size_t size, size_t start) {
 void* openai_chat_create_stream(OpenAI_Client* client, OpenAI_ChatRequest* req) {
     if (!client || !req) return NULL;
 
+    int orig_stream = req->stream;
     req->stream = 1;
 
     char* url = OPENAI_API_BASE "/chat/completions";
     char* body = build_chat_request_body(req);
-    if (!body) return NULL;
+    req->stream = orig_stream;
+    if (!body) {
+        OPENAI_LOG_ERROR("Failed to build streaming request body");
+        return NULL;
+    }
 
     OpenAI_HTTPRequest http_req = {
         .url = url,
@@ -343,7 +405,18 @@ void* openai_chat_create_stream(OpenAI_Client* client, OpenAI_ChatRequest* req) 
     OpenAI_HTTPResponse* http_resp = openai_http_request_stream(&http_req);
     free(body);
 
-    if (!http_resp) return NULL;
+    if (!http_resp) {
+        OPENAI_LOG_ERROR("Streaming HTTP request failed");
+        return NULL;
+    }
+
+    if (http_resp->status_code != 200) {
+        OPENAI_LOG_ERROR("Streaming API error: status_code=%ld, body=%.200s",
+            (long)http_resp->status_code,
+            http_resp->body ? http_resp->body : "(null)");
+        openai_http_response_free(http_resp);
+        return NULL;
+    }
 
     OpenAI_StreamHandle* handle = (OpenAI_StreamHandle*)calloc(1, sizeof(OpenAI_StreamHandle));
     if (!handle) {
@@ -399,8 +472,29 @@ int openai_stream_read(void* stream, OpenAI_StreamEvent* event) {
                 return OPENAI_ERR_EOF;
             } else if (ret == 0 && content[0] != '\0') {
                 event->content = (char*)malloc(strlen(content) + 1);
-                strcpy(event->content, content);
+                if (event->content) strcpy(event->content, content);
                 event->event_type = (char*)OPENAI_EVENT_CHUNK;
+
+                /* Parse role from line_buffer */
+                const char* role_start = strstr(line_buffer, "\"role\":\"");
+                if (role_start) {
+                    role_start += 8;
+                    const char* role_end = strstr(role_start, "\"");
+                    if (role_end && (size_t)(role_end - role_start) < 64) {
+                        event->role = (char*)malloc(role_end - role_start + 1);
+                        if (event->role) {
+                            memcpy(event->role, role_start, role_end - role_start);
+                            event->role[role_end - role_start] = '\0';
+                        }
+                    }
+                }
+
+                /* Parse index from line_buffer */
+                const char* index_start = strstr(line_buffer, "\"index\":");
+                if (index_start) {
+                    event->index = atoi(index_start + 8);
+                }
+
                 handle->parse_pos = line_end + 1;
                 if (handle->parse_pos < handle->buffer_size &&
                     (handle->buffer[handle->parse_pos] == '\n' || handle->buffer[handle->parse_pos] == '\r')) {
@@ -428,6 +522,15 @@ void openai_stream_close(void* stream) {
     }
 }
 
+void openai_stream_event_free(OpenAI_StreamEvent* event) {
+    if (event) {
+        if (event->content) free(event->content);
+        if (event->role) free(event->role);
+        event->content = NULL;
+        event->role = NULL;
+    }
+}
+
 /* Embeddings API */
 OpenAI_EmbeddingResponse* openai_embeddings_create(OpenAI_Client* client, OpenAI_EmbeddingRequest* req) {
     if (!client || !req || !req->input) return NULL;
@@ -437,11 +540,18 @@ OpenAI_EmbeddingResponse* openai_embeddings_create(OpenAI_Client* client, OpenAI
     /* Build request body - input must be escaped to prevent JSON injection */
     char* escaped_input = openai_json_escape_string(req->input);
     char* escaped_model = openai_json_escape_string(req->model ? req->model : "text-embedding-3-small");
-    char body[1024];
-    snprintf(body, sizeof(body),
+    const char* model_str = escaped_model ? escaped_model : "text-embedding-3-small";
+    const char* input_str = escaped_input ? escaped_input : "";
+    size_t body_size = strlen(model_str) + strlen(input_str) + 64;
+    char* body = (char*)malloc(body_size);
+    if (!body) {
+        free(escaped_input);
+        free(escaped_model);
+        return NULL;
+    }
+    snprintf(body, body_size,
         "{\"model\":\"%s\",\"input\":\"%s\"}",
-        escaped_model ? escaped_model : "text-embedding-3-small",
-        escaped_input ? escaped_input : "");
+        model_str, input_str);
     free(escaped_input);
     free(escaped_model);
 
@@ -454,9 +564,16 @@ OpenAI_EmbeddingResponse* openai_embeddings_create(OpenAI_Client* client, OpenAI
     };
 
     OpenAI_HTTPResponse* http_resp = openai_http_request(&http_req);
-    if (!http_resp) return NULL;
+    free(body);
+    if (!http_resp) {
+        OPENAI_LOG_ERROR("Embeddings HTTP request failed");
+        return NULL;
+    }
 
     if (http_resp->status_code != 200) {
+        OPENAI_LOG_ERROR("Embeddings API error: status_code=%ld, body=%.200s",
+            (long)http_resp->status_code,
+            http_resp->body ? http_resp->body : "(null)");
         openai_http_response_free(http_resp);
         return NULL;
     }
@@ -465,12 +582,27 @@ OpenAI_EmbeddingResponse* openai_embeddings_create(OpenAI_Client* client, OpenAI
     OpenAI_JSONNode* json = openai_json_parse(http_resp->body);
     openai_http_response_free(http_resp);
 
-    if (!json) return NULL;
+    if (!json) {
+        OPENAI_LOG_ERROR("Failed to parse embeddings JSON response");
+        return NULL;
+    }
 
     OpenAI_EmbeddingResponse* resp = (OpenAI_EmbeddingResponse*)calloc(1, sizeof(OpenAI_EmbeddingResponse));
     if (!resp) {
         openai_json_free(json);
         return NULL;
+    }
+
+    /* Extract object and model fields */
+    const char* object = openai_json_get_string(json, "object");
+    if (object) {
+        resp->object = (char*)malloc(strlen(object) + 1);
+        if (resp->object) strcpy(resp->object, object);
+    }
+    const char* model = openai_json_get_string(json, "model");
+    if (model) {
+        resp->model = (char*)malloc(strlen(model) + 1);
+        if (resp->model) strcpy(resp->model, model);
     }
 
     /* Extract embedding from data[0].embedding */
@@ -500,6 +632,8 @@ OpenAI_EmbeddingResponse* openai_embeddings_create(OpenAI_Client* client, OpenAI
 
 void openai_embedding_response_free(OpenAI_EmbeddingResponse* resp) {
     if (resp) {
+        if (resp->object) free(resp->object);
+        if (resp->model) free(resp->model);
         if (resp->embedding) free(resp->embedding);
         free(resp);
     }
