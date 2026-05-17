@@ -483,7 +483,6 @@ void* openai_chat_create_stream(OpenAI_Client* client, OpenAI_ChatRequest* req) 
     handle->eof = 0;
 
     /* Clean up http_resp struct but NOT the body (transferred to handle) */
-    if (http_resp->headers) free(http_resp->headers);
     free(http_resp);
 
     return handle;

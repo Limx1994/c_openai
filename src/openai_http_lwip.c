@@ -519,7 +519,6 @@ OpenAI_HTTPResponse* openai_http_request(OpenAI_HTTPRequest* req) {
 void openai_http_response_free(OpenAI_HTTPResponse* resp) {
     if (resp) {
         if (resp->body) free(resp->body);
-        if (resp->headers) free(resp->headers);
         free(resp);
     }
 }

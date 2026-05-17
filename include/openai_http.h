@@ -26,7 +26,6 @@ typedef struct {
     int status_code;     /**< HTTP status code */
     char* body;          /**< Response body (caller must free) */
     size_t body_size;    /**< Body size in bytes */
-    char* headers;       /**< Response headers */
 } OpenAI_HTTPResponse;
 
 /**
