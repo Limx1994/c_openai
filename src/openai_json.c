@@ -514,8 +514,17 @@ char* openai_json_escape_string(const char* str) {
             case '\t':
                 escaped_len += 2;
                 break;
+            case '\b':
+            case '\f':
+                escaped_len += 2;
+                break;
             default:
-                escaped_len++;
+                if ((unsigned char)*p < 0x20) {
+                    /* Control character: \u00XX format */
+                    escaped_len += 6;
+                } else {
+                    escaped_len++;
+                }
         }
         p++;
     }
@@ -547,8 +556,22 @@ char* openai_json_escape_string(const char* str) {
                 *out++ = '\\';
                 *out++ = 't';
                 break;
+            case '\b':
+                *out++ = '\\';
+                *out++ = 'b';
+                break;
+            case '\f':
+                *out++ = '\\';
+                *out++ = 'f';
+                break;
             default:
-                *out++ = *p;
+                if ((unsigned char)*p < 0x20) {
+                    /* Control character: \u00XX format */
+                    snprintf(out, 7, "\\u%04x", (unsigned char)*p);
+                    out += 6;
+                } else {
+                    *out++ = *p;
+                }
         }
         p++;
     }
