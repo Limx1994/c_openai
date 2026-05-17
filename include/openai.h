@@ -61,10 +61,16 @@ void* openai_chat_create_stream(OpenAI_Client* client, OpenAI_ChatRequest* req);
 /**
  * @brief Read next event from stream
  * @param stream Stream handle from openai_chat_create_stream()
- * @param event Output event structure (caller must free event->content)
+ * @param event Output event structure (caller must free event->content and event->role)
  * @return 0 on success, OPENAI_ERR_EOF on stream end, error code on failure
  */
 int openai_stream_read(void* stream, OpenAI_StreamEvent* event);
+
+/**
+ * @brief Free stream event fields (content and role)
+ * @param event Event from openai_stream_read()
+ */
+void openai_stream_event_free(OpenAI_StreamEvent* event);
 
 /**
  * @brief Close stream and free resources

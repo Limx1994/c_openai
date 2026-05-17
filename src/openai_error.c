@@ -26,6 +26,8 @@ const char* openai_error_str(OpenAI_ErrorCode code) {
             return "Buffer empty";
         case OPENAI_ERR_EOF:
             return "End of stream";
+        case OPENAI_ERR_UNKNOWN:
+            return "Unknown error";
         default:
             return "Unknown error";
     }

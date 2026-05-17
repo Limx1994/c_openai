@@ -19,26 +19,14 @@
 #include "openai_http.h"
 #include "openai_config.h"
 
-/* TLS context for secure connections */
-typedef struct {
-    void* conn;          /* altcp_pcb* for TLS, or int sock for plain TCP */
-    int is_https;
-} OpenAI_TLSContext;
-
-static int tls_initialized = 0;
+/* TLS config storage - module-level static for single-request-at-a-time use */
+static struct altcp_tls_config* s_tls_config = NULL;
 
 int openai_http_init(void) {
-#ifdef OPENAI_USE_LWIP
-    /* lwIP initialization if needed */
-    tls_initialized = 1;
-#endif
     return 0;
 }
 
 void openai_http_cleanup(void) {
-#ifdef OPENAI_USE_LWIP
-    tls_initialized = 0;
-#endif
 }
 
 static int openai_http_parse_url(const char* url, char* host, size_t host_size,
@@ -54,6 +42,7 @@ static int openai_http_parse_url(const char* url, char* host, size_t host_size,
         p += 7;
         *port = 80;
     } else {
+        OPENAI_LOG_ERROR("openai_http_parse_url: unsupported protocol in URL: %s", url);
         return -1;
     }
 
@@ -92,16 +81,20 @@ static void* openai_http_connect(const char* host, int port, int is_https) {
     if (is_https && OPENAI_USE_TLS) {
         /* Use ALTCP + mbedTLS for HTTPS */
         struct altcp_tls_config* tls_config = altcp_tls_create_config_client(NULL, 0);
-        if (!tls_config) return NULL;
+        if (!tls_config) {
+            OPENAI_LOG_ERROR("openai_http_connect: failed to create TLS config for %s", host);
+            return NULL;
+        }
 
         struct altcp_pcb* pcb = altcp_tls_new(tls_config, IPADDR_TYPE_V4);
         if (!pcb) {
+            OPENAI_LOG_ERROR("openai_http_connect: failed to create ALTCP TLS pcb for %s", host);
             altcp_tls_free_config(tls_config);
             return NULL;
         }
 
-        /* Store tls_config in pcb's state for later cleanup */
-        pcb->state = (void*)tls_config;
+        /* Store tls_config in module-level static (safe for single-request-at-a-time) */
+        s_tls_config = tls_config;
 
         return (void*)pcb;
     }
@@ -111,10 +104,14 @@ static void* openai_http_connect(const char* host, int port, int is_https) {
 
     /* Plain TCP connection */
     int sock = socket(AF_INET, SOCK_STREAM, 0);
-    if (sock < 0) return NULL;
+    if (sock < 0) {
+        OPENAI_LOG_ERROR("openai_http_connect: socket() failed");
+        return NULL;
+    }
 
     struct hostent* server = gethostbyname(host);
     if (!server) {
+        OPENAI_LOG_ERROR("openai_http_connect: DNS resolution failed for host: %s", host);
         closesocket(sock);
         return NULL;
     }
@@ -126,6 +123,7 @@ static void* openai_http_connect(const char* host, int port, int is_https) {
     addr.sin_port = htons(port);
 
     if (connect(sock, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+        OPENAI_LOG_ERROR("openai_http_connect: TCP connect failed to %s:%d", host, port);
         closesocket(sock);
         return NULL;
     }
@@ -157,13 +155,13 @@ OpenAI_HTTPResponse* openai_http_request(OpenAI_HTTPRequest* req) {
 #ifdef LWIP_ALTCP_TLS
     if (is_https && OPENAI_USE_TLS) {
         struct altcp_pcb* pcb = (struct altcp_pcb*)conn;
-        struct altcp_tls_config* tls_config = (struct altcp_tls_config*)pcb->state;
 
         /* DNS resolution and connect */
         ip_addr_t ipaddr;
         struct hostent* server = gethostbyname(host);
         if (!server) {
-            altcp_tls_free_config(tls_config);
+            OPENAI_LOG_ERROR("openai_http_request: DNS resolution failed for host: %s", host);
+            if (s_tls_config) { altcp_tls_free_config(s_tls_config); s_tls_config = NULL; }
             altcp_close(pcb);
             return NULL;
         }
@@ -171,7 +169,8 @@ OpenAI_HTTPResponse* openai_http_request(OpenAI_HTTPRequest* req) {
 
         err_t err = altcp_connect(pcb, &ipaddr, port, NULL);
         if (err != ERR_OK) {
-            altcp_tls_free_config(tls_config);
+            OPENAI_LOG_ERROR("openai_http_request: ALTCP connect failed to %s:%d (err=%d)", host, port, err);
+            if (s_tls_config) { altcp_tls_free_config(s_tls_config); s_tls_config = NULL; }
             altcp_close(pcb);
             return NULL;
         }
@@ -181,7 +180,7 @@ OpenAI_HTTPResponse* openai_http_request(OpenAI_HTTPRequest* req) {
         size_t header_size = 512 + auth_len;
         char* header = (char*)malloc(header_size);
         if (!header) {
-            altcp_tls_free_config(tls_config);
+            if (s_tls_config) { altcp_tls_free_config(s_tls_config); s_tls_config = NULL; }
             altcp_close(pcb);
             return NULL;
         }
@@ -210,31 +209,24 @@ OpenAI_HTTPResponse* openai_http_request(OpenAI_HTTPRequest* req) {
                 req->body ? req->body_size : 0);
         }
 
-        /* Send header */
-        int total_sent = 0;
-        while (total_sent < header_len) {
-            int sent = altcp_write(pcb, header + total_sent, header_len - total_sent, 0);
-            if (sent < 0) {
-                free(header);
-                altcp_tls_free_config(tls_config);
-                altcp_close(pcb);
-                return NULL;
-            }
-            total_sent += sent;
-        }
+        /* Send header - altcp_write buffers data, single call is sufficient */
+        err = altcp_write(pcb, header, header_len, 0);
         free(header);
+        if (err != ERR_OK) {
+            OPENAI_LOG_ERROR("openai_http_request: ALTCP write header failed (err=%d)", err);
+            if (s_tls_config) { altcp_tls_free_config(s_tls_config); s_tls_config = NULL; }
+            altcp_close(pcb);
+            return NULL;
+        }
 
         /* Send body if present */
         if (req->body && req->body_size > 0) {
-            total_sent = 0;
-            while (total_sent < (int)req->body_size) {
-                int sent = altcp_write(pcb, req->body + total_sent, req->body_size - total_sent, 0);
-                if (sent < 0) {
-                    altcp_tls_free_config(tls_config);
-                    altcp_close(pcb);
-                    return NULL;
-                }
-                total_sent += sent;
+            err = altcp_write(pcb, req->body, req->body_size, 0);
+            if (err != ERR_OK) {
+                OPENAI_LOG_ERROR("openai_http_request: ALTCP write body failed (err=%d)", err);
+                if (s_tls_config) { altcp_tls_free_config(s_tls_config); s_tls_config = NULL; }
+                altcp_close(pcb);
+                return NULL;
             }
         }
 
@@ -243,7 +235,7 @@ OpenAI_HTTPResponse* openai_http_request(OpenAI_HTTPRequest* req) {
         size_t buf_size = 0;
         char* buf = (char*)malloc(buf_capacity);
         if (!buf) {
-            altcp_tls_free_config(tls_config);
+            if (s_tls_config) { altcp_tls_free_config(s_tls_config); s_tls_config = NULL; }
             altcp_close(pcb);
             return NULL;
         }
@@ -255,24 +247,51 @@ OpenAI_HTTPResponse* openai_http_request(OpenAI_HTTPRequest* req) {
                 char* new_buf = (char*)realloc(buf, buf_capacity);
                 if (!new_buf) {
                     free(buf);
-                    altcp_tls_free_config(tls_config);
+                    if (s_tls_config) { altcp_tls_free_config(s_tls_config); s_tls_config = NULL; }
                     altcp_close(pcb);
                     return NULL;
                 }
                 buf = new_buf;
             }
 
-            int to_read = (int)(buf_capacity - buf_size - 1);
+            size_t to_read = (buf_capacity - buf_size - 1) < 4096 ? (buf_capacity - buf_size - 1) : 4096;
             int received = altcp_read(pcb, buf + buf_size, to_read);
             if (received <= 0) break;
             buf_size += received;
             buf[buf_size] = '\0';
 
             char* header_end = strstr(buf, "\r\n\r\n");
-            if (header_end) break;
+            if (header_end) {
+                /* Parse Content-Length to read remaining body */
+                char* cl_str = strstr(buf, "Content-Length:");
+                if (!cl_str) cl_str = strstr(buf, "content-length:");
+                if (cl_str) {
+                    cl_str += 15;
+                    while (*cl_str == ' ') cl_str++;
+                    int content_length = atoi(cl_str);
+                    size_t body_received = buf_size - (size_t)(header_end + 4 - buf);
+                    while ((int)body_received < content_length) {
+                        if (buf_size >= buf_capacity - 1) {
+                            buf_capacity *= 2;
+                            char* new_buf2 = (char*)realloc(buf, buf_capacity);
+                            if (!new_buf2) break;
+                            buf = new_buf2;
+                        }
+                        size_t to_read2 = (buf_capacity - buf_size - 1) < 4096 ? (buf_capacity - buf_size - 1) : 4096;
+                        if ((int)to_read2 > content_length - (int)body_received)
+                            to_read2 = (size_t)(content_length - (int)body_received);
+                        int received2 = altcp_read(pcb, buf + buf_size, to_read2);
+                        if (received2 <= 0) break;
+                        buf_size += received2;
+                        buf[buf_size] = '\0';
+                        body_received += received2;
+                    }
+                }
+                break;
+            }
         }
 
-        altcp_tls_free_config(tls_config);
+        s_tls_config = NULL;
         altcp_close(pcb);
 
         OpenAI_HTTPResponse* resp = (OpenAI_HTTPResponse*)calloc(1, sizeof(OpenAI_HTTPResponse));
@@ -305,6 +324,7 @@ OpenAI_HTTPResponse* openai_http_request(OpenAI_HTTPRequest* req) {
             resp->status_code = 0;
         }
         free(buf);
+        OPENAI_LOG_DEBUG("lwIP HTTPS response: status=%d, body_size=%zu", resp->status_code, resp->body_size);
         return resp;
     }
 #endif
@@ -352,6 +372,7 @@ OpenAI_HTTPResponse* openai_http_request(OpenAI_HTTPRequest* req) {
     while (total_sent < header_len) {
         int sent = send(sock, header + total_sent, header_len - total_sent, 0);
         if (sent < 0) {
+            OPENAI_LOG_ERROR("lwIP: send header failed");
             free(header);
 #ifdef OPENAI_USE_LWIP
             closesocket(sock);
@@ -367,6 +388,7 @@ OpenAI_HTTPResponse* openai_http_request(OpenAI_HTTPRequest* req) {
         while (total_sent < (int)req->body_size) {
             int sent = send(sock, req->body + total_sent, req->body_size - total_sent, 0);
             if (sent < 0) {
+                OPENAI_LOG_ERROR("lwIP: send body failed");
                 free(header);
 #ifdef OPENAI_USE_LWIP
                 closesocket(sock);
@@ -407,13 +429,44 @@ OpenAI_HTTPResponse* openai_http_request(OpenAI_HTTPRequest* req) {
 
         int to_read = (int)(buf_capacity - buf_size - 1);
         int received = recv(sock, buf + buf_size, to_read, 0);
-        if (received <= 0) break;
+        if (received < 0) {
+            OPENAI_LOG_WARN("lwIP: recv failed");
+            break;
+        }
+        if (received == 0) break;
         buf_size += received;
         buf[buf_size] = '\0';
 
         /* Check for end of headers */
         char* header_end = strstr(buf, "\r\n\r\n");
-        if (header_end) break;
+        if (header_end) {
+            /* Parse Content-Length to read remaining body */
+            char* cl_str = strstr(buf, "Content-Length:");
+            if (!cl_str) cl_str = strstr(buf, "content-length:");
+            if (cl_str) {
+                cl_str += 15;
+                while (*cl_str == ' ') cl_str++;
+                int content_length = atoi(cl_str);
+                size_t body_received = buf_size - (size_t)(header_end + 4 - buf);
+                while ((int)body_received < content_length) {
+                    if (buf_size >= buf_capacity - 1) {
+                        buf_capacity *= 2;
+                        char* new_buf2 = (char*)realloc(buf, buf_capacity);
+                        if (!new_buf2) break;
+                        buf = new_buf2;
+                    }
+                    int to_read2 = (int)(buf_capacity - buf_size - 1);
+                    if (to_read2 > content_length - (int)body_received)
+                        to_read2 = content_length - (int)body_received;
+                    int received2 = recv(sock, buf + buf_size, to_read2, 0);
+                    if (received2 <= 0) break;
+                    buf_size += received2;
+                    buf[buf_size] = '\0';
+                    body_received += received2;
+                }
+            }
+            break;
+        }
     }
 
 #ifdef OPENAI_USE_LWIP
@@ -459,6 +512,7 @@ OpenAI_HTTPResponse* openai_http_request(OpenAI_HTTPRequest* req) {
     }
 
     free(buf);
+    OPENAI_LOG_DEBUG("lwIP HTTP response: status=%d, body_size=%zu", resp->status_code, resp->body_size);
     return resp;
 }
 
@@ -489,13 +543,13 @@ OpenAI_HTTPResponse* openai_http_request_stream(OpenAI_HTTPRequest* req) {
 #ifdef LWIP_ALTCP_TLS
     if (is_https && OPENAI_USE_TLS) {
         struct altcp_pcb* pcb = (struct altcp_pcb*)conn;
-        struct altcp_tls_config* tls_config = (struct altcp_tls_config*)pcb->state;
 
         /* DNS resolution and connect */
         ip_addr_t ipaddr;
         struct hostent* server = gethostbyname(host);
         if (!server) {
-            altcp_tls_free_config(tls_config);
+            OPENAI_LOG_ERROR("openai_http_request_stream: DNS resolution failed for host: %s", host);
+            if (s_tls_config) { altcp_tls_free_config(s_tls_config); s_tls_config = NULL; }
             altcp_close(pcb);
             return NULL;
         }
@@ -503,7 +557,8 @@ OpenAI_HTTPResponse* openai_http_request_stream(OpenAI_HTTPRequest* req) {
 
         err_t err = altcp_connect(pcb, &ipaddr, port, NULL);
         if (err != ERR_OK) {
-            altcp_tls_free_config(tls_config);
+            OPENAI_LOG_ERROR("openai_http_request_stream: ALTCP connect failed to %s:%d (err=%d)", host, port, err);
+            if (s_tls_config) { altcp_tls_free_config(s_tls_config); s_tls_config = NULL; }
             altcp_close(pcb);
             return NULL;
         }
@@ -513,7 +568,7 @@ OpenAI_HTTPResponse* openai_http_request_stream(OpenAI_HTTPRequest* req) {
         size_t header_size = 512 + auth_len;
         char* header = (char*)malloc(header_size);
         if (!header) {
-            altcp_tls_free_config(tls_config);
+            if (s_tls_config) { altcp_tls_free_config(s_tls_config); s_tls_config = NULL; }
             altcp_close(pcb);
             return NULL;
         }
@@ -542,31 +597,24 @@ OpenAI_HTTPResponse* openai_http_request_stream(OpenAI_HTTPRequest* req) {
                 req->body ? req->body_size : 0);
         }
 
-        /* Send header */
-        int total_sent = 0;
-        while (total_sent < header_len) {
-            int sent = altcp_write(pcb, header + total_sent, header_len - total_sent, 0);
-            if (sent < 0) {
-                free(header);
-                altcp_tls_free_config(tls_config);
-                altcp_close(pcb);
-                return NULL;
-            }
-            total_sent += sent;
-        }
+        /* Send header - altcp_write buffers data, single call is sufficient */
+        err = altcp_write(pcb, header, header_len, 0);
         free(header);
+        if (err != ERR_OK) {
+            OPENAI_LOG_ERROR("openai_http_request_stream: ALTCP write header failed (err=%d)", err);
+            if (s_tls_config) { altcp_tls_free_config(s_tls_config); s_tls_config = NULL; }
+            altcp_close(pcb);
+            return NULL;
+        }
 
         /* Send body if present */
         if (req->body && req->body_size > 0) {
-            total_sent = 0;
-            while (total_sent < (int)req->body_size) {
-                int sent = altcp_write(pcb, req->body + total_sent, req->body_size - total_sent, 0);
-                if (sent < 0) {
-                    altcp_tls_free_config(tls_config);
-                    altcp_close(pcb);
-                    return NULL;
-                }
-                total_sent += sent;
+            err = altcp_write(pcb, req->body, req->body_size, 0);
+            if (err != ERR_OK) {
+                OPENAI_LOG_ERROR("openai_http_request_stream: ALTCP write body failed (err=%d)", err);
+                if (s_tls_config) { altcp_tls_free_config(s_tls_config); s_tls_config = NULL; }
+                altcp_close(pcb);
+                return NULL;
             }
         }
 
@@ -575,7 +623,7 @@ OpenAI_HTTPResponse* openai_http_request_stream(OpenAI_HTTPRequest* req) {
         size_t buf_size = 0;
         char* buf = (char*)malloc(buf_capacity);
         if (!buf) {
-            altcp_tls_free_config(tls_config);
+            if (s_tls_config) { altcp_tls_free_config(s_tls_config); s_tls_config = NULL; }
             altcp_close(pcb);
             return NULL;
         }
@@ -587,24 +635,51 @@ OpenAI_HTTPResponse* openai_http_request_stream(OpenAI_HTTPRequest* req) {
                 char* new_buf = (char*)realloc(buf, buf_capacity);
                 if (!new_buf) {
                     free(buf);
-                    altcp_tls_free_config(tls_config);
+                    if (s_tls_config) { altcp_tls_free_config(s_tls_config); s_tls_config = NULL; }
                     altcp_close(pcb);
                     return NULL;
                 }
                 buf = new_buf;
             }
 
-            int to_read = (int)(buf_capacity - buf_size - 1);
+            size_t to_read = (buf_capacity - buf_size - 1) < 4096 ? (buf_capacity - buf_size - 1) : 4096;
             int received = altcp_read(pcb, buf + buf_size, to_read);
             if (received <= 0) break;
             buf_size += received;
             buf[buf_size] = '\0';
 
             char* header_end = strstr(buf, "\r\n\r\n");
-            if (header_end) break;
+            if (header_end) {
+                /* Parse Content-Length to read remaining body */
+                char* cl_str = strstr(buf, "Content-Length:");
+                if (!cl_str) cl_str = strstr(buf, "content-length:");
+                if (cl_str) {
+                    cl_str += 15;
+                    while (*cl_str == ' ') cl_str++;
+                    int content_length = atoi(cl_str);
+                    size_t body_received = buf_size - (size_t)(header_end + 4 - buf);
+                    while ((int)body_received < content_length) {
+                        if (buf_size >= buf_capacity - 1) {
+                            buf_capacity *= 2;
+                            char* new_buf2 = (char*)realloc(buf, buf_capacity);
+                            if (!new_buf2) break;
+                            buf = new_buf2;
+                        }
+                        size_t to_read2 = (buf_capacity - buf_size - 1) < 4096 ? (buf_capacity - buf_size - 1) : 4096;
+                        if ((int)to_read2 > content_length - (int)body_received)
+                            to_read2 = (size_t)(content_length - (int)body_received);
+                        int received2 = altcp_read(pcb, buf + buf_size, to_read2);
+                        if (received2 <= 0) break;
+                        buf_size += received2;
+                        buf[buf_size] = '\0';
+                        body_received += received2;
+                    }
+                }
+                break;
+            }
         }
 
-        altcp_tls_free_config(tls_config);
+        s_tls_config = NULL;
         altcp_close(pcb);
 
         OpenAI_HTTPResponse* resp = (OpenAI_HTTPResponse*)calloc(1, sizeof(OpenAI_HTTPResponse));
@@ -637,6 +712,7 @@ OpenAI_HTTPResponse* openai_http_request_stream(OpenAI_HTTPRequest* req) {
             resp->status_code = 0;
         }
         free(buf);
+        OPENAI_LOG_DEBUG("lwIP HTTPS response: status=%d, body_size=%zu", resp->status_code, resp->body_size);
         return resp;
     }
 #endif
@@ -684,6 +760,7 @@ OpenAI_HTTPResponse* openai_http_request_stream(OpenAI_HTTPRequest* req) {
     while (total_sent < header_len) {
         int sent = send(sock, header + total_sent, header_len - total_sent, 0);
         if (sent < 0) {
+            OPENAI_LOG_ERROR("lwIP: send header failed");
             free(header);
 #ifdef OPENAI_USE_LWIP
             closesocket(sock);
@@ -699,6 +776,7 @@ OpenAI_HTTPResponse* openai_http_request_stream(OpenAI_HTTPRequest* req) {
         while (total_sent < (int)req->body_size) {
             int sent = send(sock, req->body + total_sent, req->body_size - total_sent, 0);
             if (sent < 0) {
+                OPENAI_LOG_ERROR("lwIP: send body failed");
                 free(header);
 #ifdef OPENAI_USE_LWIP
                 closesocket(sock);
@@ -739,13 +817,44 @@ OpenAI_HTTPResponse* openai_http_request_stream(OpenAI_HTTPRequest* req) {
 
         int to_read = (int)(buf_capacity - buf_size - 1);
         int received = recv(sock, buf + buf_size, to_read, 0);
-        if (received <= 0) break;
+        if (received < 0) {
+            OPENAI_LOG_WARN("lwIP: recv failed");
+            break;
+        }
+        if (received == 0) break;
         buf_size += received;
         buf[buf_size] = '\0';
 
         /* Check for end of headers */
         char* header_end = strstr(buf, "\r\n\r\n");
-        if (header_end) break;
+        if (header_end) {
+            /* Parse Content-Length to read remaining body */
+            char* cl_str = strstr(buf, "Content-Length:");
+            if (!cl_str) cl_str = strstr(buf, "content-length:");
+            if (cl_str) {
+                cl_str += 15;
+                while (*cl_str == ' ') cl_str++;
+                int content_length = atoi(cl_str);
+                size_t body_received = buf_size - (size_t)(header_end + 4 - buf);
+                while ((int)body_received < content_length) {
+                    if (buf_size >= buf_capacity - 1) {
+                        buf_capacity *= 2;
+                        char* new_buf2 = (char*)realloc(buf, buf_capacity);
+                        if (!new_buf2) break;
+                        buf = new_buf2;
+                    }
+                    int to_read2 = (int)(buf_capacity - buf_size - 1);
+                    if (to_read2 > content_length - (int)body_received)
+                        to_read2 = content_length - (int)body_received;
+                    int received2 = recv(sock, buf + buf_size, to_read2, 0);
+                    if (received2 <= 0) break;
+                    buf_size += received2;
+                    buf[buf_size] = '\0';
+                    body_received += received2;
+                }
+            }
+            break;
+        }
     }
 
 #ifdef OPENAI_USE_LWIP

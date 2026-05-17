@@ -4,8 +4,9 @@
 #include <curl/curl.h>
 
 #include "openai_http.h"
+#include "openai_config.h"
 
-static int curl_initialized = 0;
+static int curl_init_count = 0;
 
 struct memory_chunk {
     char* data;
@@ -31,17 +32,25 @@ static size_t write_callback(void* contents, size_t size, size_t nmemb, void* us
 }
 
 int openai_http_init(void) {
-    if (!curl_initialized) {
-        curl_global_init(CURL_GLOBAL_DEFAULT);
-        curl_initialized = 1;
+    if (curl_init_count == 0) {
+        CURLcode res = curl_global_init(CURL_GLOBAL_DEFAULT);
+        if (res != CURLE_OK) {
+            OPENAI_LOG_ERROR("curl_global_init failed: %s", curl_easy_strerror(res));
+            return -1;
+        }
     }
+    curl_init_count++;
+    OPENAI_LOG_DEBUG("openai_http_init: curl_init_count = %d", curl_init_count);
     return 0;
 }
 
 void openai_http_cleanup(void) {
-    if (curl_initialized) {
-        curl_global_cleanup();
-        curl_initialized = 0;
+    if (curl_init_count > 0) {
+        curl_init_count--;
+        OPENAI_LOG_DEBUG("openai_http_cleanup: curl_init_count = %d", curl_init_count);
+        if (curl_init_count == 0) {
+            curl_global_cleanup();
+        }
     }
 }
 
@@ -49,7 +58,10 @@ OpenAI_HTTPResponse* openai_http_request(OpenAI_HTTPRequest* req) {
     if (!req || !req->url) return NULL;
 
     CURL* curl = curl_easy_init();
-    if (!curl) return NULL;
+    if (!curl) {
+        OPENAI_LOG_ERROR("curl_easy_init failed");
+        return NULL;
+    }
 
     OpenAI_HTTPResponse* resp = (OpenAI_HTTPResponse*)calloc(1, sizeof(OpenAI_HTTPResponse));
     if (!resp) {
@@ -79,14 +91,12 @@ OpenAI_HTTPResponse* openai_http_request(OpenAI_HTTPRequest* req) {
     }
 
     struct curl_slist* headers = NULL;
+    headers = curl_slist_append(headers, "Content-Type: application/json");
+    headers = curl_slist_append(headers, "Accept: application/json");
     if (req->auth_header) {
         char auth_header[512];
         snprintf(auth_header, sizeof(auth_header), "Authorization: Bearer %s", req->auth_header);
         headers = curl_slist_append(headers, auth_header);
-    }
-    if (headers) {
-        headers = curl_slist_append(headers, "Content-Type: application/json");
-        headers = curl_slist_append(headers, "Accept: application/json");
     }
     if (headers) {
         curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
@@ -98,6 +108,7 @@ OpenAI_HTTPResponse* openai_http_request(OpenAI_HTTPRequest* req) {
     CURLcode res = curl_easy_perform(curl);
 
     if (res != CURLE_OK) {
+        OPENAI_LOG_ERROR("curl_easy_perform failed: %s", curl_easy_strerror(res));
         free(chunk.data);
         free(resp);
         if (headers) curl_slist_free_all(headers);
@@ -111,6 +122,7 @@ OpenAI_HTTPResponse* openai_http_request(OpenAI_HTTPRequest* req) {
     resp->status_code = (int)status_code;
     resp->body = chunk.data;
     resp->body_size = chunk.size;
+    OPENAI_LOG_DEBUG("HTTP response: status=%ld, body_size=%zu", status_code, chunk.size);
 
     if (headers) curl_slist_free_all(headers);
     curl_easy_cleanup(curl);
@@ -150,7 +162,10 @@ OpenAI_HTTPResponse* openai_http_request_stream(OpenAI_HTTPRequest* req) {
     if (!req || !req->url) return NULL;
 
     CURL* curl = curl_easy_init();
-    if (!curl) return NULL;
+    if (!curl) {
+        OPENAI_LOG_ERROR("curl_easy_init failed");
+        return NULL;
+    }
 
     OpenAI_HTTPResponse* resp = (OpenAI_HTTPResponse*)calloc(1, sizeof(OpenAI_HTTPResponse));
     if (!resp) {
@@ -181,14 +196,15 @@ OpenAI_HTTPResponse* openai_http_request_stream(OpenAI_HTTPRequest* req) {
     }
 
     struct curl_slist* headers = NULL;
+    headers = curl_slist_append(headers, "Content-Type: application/json");
+    headers = curl_slist_append(headers, "Accept: text/event-stream");
     if (req->auth_header) {
         char auth_header[512];
         snprintf(auth_header, sizeof(auth_header), "Authorization: Bearer %s", req->auth_header);
         headers = curl_slist_append(headers, auth_header);
     }
     if (headers) {
-        headers = curl_slist_append(headers, "Content-Type: application/json");
-        headers = curl_slist_append(headers, "Accept: text/event-stream");
+        curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
     }
 
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, OPENAI_TIMEOUT);
@@ -197,6 +213,7 @@ OpenAI_HTTPResponse* openai_http_request_stream(OpenAI_HTTPRequest* req) {
     CURLcode res = curl_easy_perform(curl);
 
     if (res != CURLE_OK) {
+        OPENAI_LOG_ERROR("curl_easy_perform (stream) failed: %s", curl_easy_strerror(res));
         free(buf.data);
         free(resp);
         if (headers) curl_slist_free_all(headers);
@@ -210,6 +227,7 @@ OpenAI_HTTPResponse* openai_http_request_stream(OpenAI_HTTPRequest* req) {
     resp->status_code = (int)status_code;
     resp->body = buf.data;
     resp->body_size = buf.size;
+    OPENAI_LOG_DEBUG("HTTP stream response: status=%ld, body_size=%zu", status_code, buf.size);
 
     if (headers) curl_slist_free_all(headers);
     curl_easy_cleanup(curl);

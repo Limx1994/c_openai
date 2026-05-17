@@ -14,38 +14,46 @@
 #define OPENAI_HTTP_BACKEND OPENAI_BACKEND_CURL  /**< Select HTTP backend */
 #endif
 
-/* Memory management */
-#ifndef OPENAI_USE_MALLOC
-#define OPENAI_USE_MALLOC 1  /**< 1=dynamic allocation, 0=static buffer mode */
-#endif
-
-/* Buffer sizes */
-#ifndef OPENAI_BUFFER_SIZE
-#define OPENAI_BUFFER_SIZE 4096  /**< Default buffer size for static mode */
-#endif
-
 /* Connection settings */
-#ifndef OPENAI_MAX_RETRIES
-#define OPENAI_MAX_RETRIES 3  /**< Maximum retry attempts */
-#endif
-
 #ifndef OPENAI_TIMEOUT
 #define OPENAI_TIMEOUT 30  /**< Request timeout in seconds */
 #endif
-
-/* API Base URL */
-#define OPENAI_API_BASE "https://api.openai.com/v1"  /**< OpenAI API base URL */
 
 /* TLS settings (for lwIP backend only) */
 #ifndef OPENAI_USE_TLS
 #define OPENAI_USE_TLS 1  /**< 1=enable TLS, 0=disable (plain HTTP) */
 #endif
 
-#ifndef OPENAI_TLS_CERT_VERIFY
-#define OPENAI_TLS_CERT_VERIFY 0  /**< 0=skip cert verify, 1=verify CA cert */
+/* API Base URL - conditional on TLS setting */
+#if OPENAI_USE_TLS
+#define OPENAI_API_BASE "https://api.openai.com/v1"
+#else
+#define OPENAI_API_BASE "http://api.openai.com/v1"
 #endif
 
 /* Version */
 #define OPENAI_VERSION "1.0.0"  /**< Library version */
+
+/* Logging */
+#ifndef OPENAI_LOG_ENABLED
+#define OPENAI_LOG_ENABLED 1   /**< 0=disable all logging, 1=enable */
+#endif
+
+#ifndef OPENAI_LOG_LEVEL
+#define OPENAI_LOG_LEVEL 3     /**< 0=error, 1=warn, 2=info, 3=debug */
+#endif
+
+#if OPENAI_LOG_ENABLED
+#include <stdio.h>
+#define OPENAI_LOG_ERROR(fmt, ...) do { if (OPENAI_LOG_LEVEL >= 0) fprintf(stderr, "[OPENAI ERROR] " fmt "\n", ##__VA_ARGS__); } while(0)
+#define OPENAI_LOG_WARN(fmt, ...)  do { if (OPENAI_LOG_LEVEL >= 1) fprintf(stderr, "[OPENAI WARN]  " fmt "\n", ##__VA_ARGS__); } while(0)
+#define OPENAI_LOG_INFO(fmt, ...)  do { if (OPENAI_LOG_LEVEL >= 2) fprintf(stderr, "[OPENAI INFO]  " fmt "\n", ##__VA_ARGS__); } while(0)
+#define OPENAI_LOG_DEBUG(fmt, ...) do { if (OPENAI_LOG_LEVEL >= 3) fprintf(stderr, "[OPENAI DEBUG] " fmt "\n", ##__VA_ARGS__); } while(0)
+#else
+#define OPENAI_LOG_ERROR(fmt, ...) do {} while(0)
+#define OPENAI_LOG_WARN(fmt, ...)  do {} while(0)
+#define OPENAI_LOG_INFO(fmt, ...)  do {} while(0)
+#define OPENAI_LOG_DEBUG(fmt, ...) do {} while(0)
+#endif
 
 #endif /* OPENAI_CONFIG_H */
