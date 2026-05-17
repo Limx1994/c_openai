@@ -471,6 +471,7 @@ void* openai_chat_create_stream(OpenAI_Client* client, OpenAI_ChatRequest* req) 
 
     OpenAI_StreamHandle* handle = (OpenAI_StreamHandle*)calloc(1, sizeof(OpenAI_StreamHandle));
     if (!handle) {
+        OPENAI_LOG_ERROR("Failed to allocate stream handle");
         openai_http_response_free(http_resp);
         return NULL;
     }
