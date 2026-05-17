@@ -371,19 +371,29 @@ static int parse_sse_line(const char* line, size_t len, char* output, size_t out
     }
 
     /* Parse the JSON to extract delta.content */
-    /* Simple approach: look for "content\":\" ... \"" */
+    /* Safe approach: handle escaped quotes properly */
     const char* content_start = strstr(line, "\"content\":\"");
     if (content_start) {
         content_start += 11; /* skip "\"content\":\"" */
-        const char* content_end = strstr(content_start, "\"");
-        if (content_end) {
-            size_t content_len = content_end - content_start;
-            if (content_len < output_size - 1) {
-                memcpy(output, content_start, content_len);
-                output[content_len] = '\0';
-                return 0;
+
+        /* Find closing quote, handling escaped characters */
+        const char* p = content_start;
+        size_t content_len = 0;
+
+        while (*p && *p != '"' && content_len < output_size - 1) {
+            if (*p == '\\') {
+                /* Skip escaped character */
+                p++;
+                if (*p == '\0') break;
+                output[content_len++] = *p;
+                p++;
+            } else {
+                output[content_len++] = *p;
+                p++;
             }
         }
+        output[content_len] = '\0';
+        return 0;
     }
     return -1;
 }
