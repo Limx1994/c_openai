@@ -524,7 +524,7 @@ int openai_stream_read(void* stream, OpenAI_StreamEvent* event) {
             } else if (ret == 0 && content[0] != '\0') {
                 event->content = (char*)malloc(strlen(content) + 1);
                 if (event->content) strcpy(event->content, content);
-                event->event_type = (char*)OPENAI_EVENT_CHUNK;
+                event->event_type = OPENAI_EVENT_CHUNK;
 
                 /* Parse role from line_buffer */
                 const char* role_start = strstr(line_buffer, "\"role\":\"");
@@ -579,6 +579,7 @@ void openai_stream_event_free(OpenAI_StreamEvent* event) {
         if (event->role) free(event->role);
         event->content = NULL;
         event->role = NULL;
+        /* event_type is static string, no need to free */
     }
 }
 

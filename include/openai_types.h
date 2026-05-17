@@ -83,10 +83,10 @@ typedef struct {
  * @brief Stream event structure
  */
 typedef struct {
-    char* event_type;   /**< Event type (e.g., "chat.completion.chunk") */
-    char* content;      /**< Delta content (caller must free) */
-    char* role;         /**< Optional role */
-    int index;          /**< Choice index */
+    const char* event_type;   /**< Event type (e.g., "chat.completion.chunk") - static string */
+    char* content;            /**< Delta content (caller must free) */
+    char* role;               /**< Optional role (caller must free) */
+    int index;                /**< Choice index */
 } OpenAI_StreamEvent;
 
 /* Client handle - forward declaration */
