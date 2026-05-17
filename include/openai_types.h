@@ -8,11 +8,6 @@
 
 #include <stddef.h>
 
-/* Message roles */
-#define OPENAI_ROLE_SYSTEM "system"
-#define OPENAI_ROLE_USER "user"
-#define OPENAI_ROLE_ASSISTANT "assistant"
-
 /**
  * @brief Chat message structure
  */

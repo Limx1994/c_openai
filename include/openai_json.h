@@ -39,6 +39,9 @@ void openai_json_free(OpenAI_JSONNode* node);
  * @brief Convert JSON DOM back to string
  * @param node Root node from openai_json_parse()
  * @return JSON string (caller must free), or NULL on failure
+ *
+ * @deprecated This function is not currently used by the library.
+ * Consider removing if not needed.
  */
 char* openai_json_dump(OpenAI_JSONNode* node);
 
