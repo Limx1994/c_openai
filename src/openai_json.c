@@ -198,9 +198,17 @@ static const char* openai_json_parse_value(const char* p, OpenAI_JSONNode* node)
 
 OpenAI_JSONNode* openai_json_parse(const char* json_string) {
     if (!json_string) return NULL;
+
+    /* Skip leading whitespace */
+    const char* p = json_string;
+    while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
+
+    /* Valid JSON must start with { or [ */
+    if (*p != '{' && *p != '[') return NULL;
+
     OpenAI_JSONNode* root = (OpenAI_JSONNode*)calloc(1, sizeof(OpenAI_JSONNode));
     if (!root) return NULL;
-    openai_json_parse_value(json_string, root);
+    openai_json_parse_value(p, root);
     return root;
 }
 
