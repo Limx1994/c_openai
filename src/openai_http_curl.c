@@ -111,8 +111,29 @@ OpenAI_HTTPResponse* openai_http_request(OpenAI_HTTPRequest* req) {
     headers = curl_slist_append(headers, "Accept: application/json");
     if (req->auth_header) {
         char auth_header[512];
-        snprintf(auth_header, sizeof(auth_header), "Authorization: Bearer %s", req->auth_header);
+        if (req->auth_mode == 1) {
+            snprintf(auth_header, sizeof(auth_header), "x-api-key: %s", req->auth_header);
+        } else {
+            snprintf(auth_header, sizeof(auth_header), "Authorization: Bearer %s", req->auth_header);
+        }
         headers = curl_slist_append(headers, auth_header);
+    }
+    if (req->extra_headers) {
+        const char* p = req->extra_headers;
+        while (*p) {
+            const char* line_end = strstr(p, "\r\n");
+            size_t line_len = line_end ? (size_t)(line_end - p) : strlen(p);
+            if (line_len > 0) {
+                char* hdr = (char*)malloc(line_len + 1);
+                if (hdr) {
+                    memcpy(hdr, p, line_len);
+                    hdr[line_len] = '\0';
+                    headers = curl_slist_append(headers, hdr);
+                    free(hdr);
+                }
+            }
+            if (line_end) p = line_end + 2; else break;
+        }
     }
     if (headers) {
         curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
@@ -221,8 +242,29 @@ OpenAI_HTTPResponse* openai_http_request_stream(OpenAI_HTTPRequest* req) {
     headers = curl_slist_append(headers, "Accept: text/event-stream");
     if (req->auth_header) {
         char auth_header[512];
-        snprintf(auth_header, sizeof(auth_header), "Authorization: Bearer %s", req->auth_header);
+        if (req->auth_mode == 1) {
+            snprintf(auth_header, sizeof(auth_header), "x-api-key: %s", req->auth_header);
+        } else {
+            snprintf(auth_header, sizeof(auth_header), "Authorization: Bearer %s", req->auth_header);
+        }
         headers = curl_slist_append(headers, auth_header);
+    }
+    if (req->extra_headers) {
+        const char* p = req->extra_headers;
+        while (*p) {
+            const char* line_end = strstr(p, "\r\n");
+            size_t line_len = line_end ? (size_t)(line_end - p) : strlen(p);
+            if (line_len > 0) {
+                char* hdr = (char*)malloc(line_len + 1);
+                if (hdr) {
+                    memcpy(hdr, p, line_len);
+                    hdr[line_len] = '\0';
+                    headers = curl_slist_append(headers, hdr);
+                    free(hdr);
+                }
+            }
+            if (line_end) p = line_end + 2; else break;
+        }
     }
     if (headers) {
         curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
