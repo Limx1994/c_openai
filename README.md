@@ -1,6 +1,6 @@
 # C-OpenAI
 
-A cross-platform OpenAI API client written in C, designed for MCU (Microcontroller Unit) and POSIX-compliant systems.
+A cross-platform OpenAI/Anthropic API client written in C, designed for MCU (Microcontroller Unit) and POSIX-compliant systems.
 
 ## Features
 
@@ -8,11 +8,10 @@ A cross-platform OpenAI API client written in C, designed for MCU (Microcontroll
 - **Dual HTTP backends**:
   - `libcurl`: Full-featured for PC and servers
   - `lwIP`: Lightweight for resource-constrained MCUs (STM32, ESP32, etc.)
+- **Multi-provider support**:
+  - OpenAI API (Chat Completions, Streaming, Embeddings)
+  - Anthropic Messages API (Chat, Streaming)
 - **Configurable memory**: Dynamic allocation or static buffer mode (compile-time option)
-- **Core API support**:
-  - Chat Completions
-  - Streaming responses (SSE)
-  - Embeddings
 - **Security**: JSON injection prevention, memory safety checks, secure auth header handling
 
 ## Project Structure
@@ -155,18 +154,54 @@ free(req.messages);
 openai_client_free(client);
 ```
 
+### Anthropic Usage
+
+```c
+#include "openai.h"
+
+// Create client with Anthropic API key
+OpenAI_Client* client = openai_client_new("sk-ant-...");
+openai_client_set_provider(client, OPENAI_PROVIDER_ANTHROPIC);
+// base_url automatically set to https://api.anthropic.com/v1
+
+// Same API as OpenAI - system prompt is extracted automatically
+OpenAI_ChatRequest req = {0};
+req.model = "claude-3-opus-20240229";
+req.messages = malloc(sizeof(OpenAI_Message) * 2);
+req.messages[0].role = "system";
+req.messages[0].content = "You are a helpful assistant.";
+req.messages[1].role = "user";
+req.messages[1].content = "Hello!";
+req.message_count = 2;
+req.temperature = 0.7f;
+req.max_tokens = 1024;  // Required for Anthropic
+
+OpenAI_ChatResponse* resp = openai_chat_create(client, &req);
+// ... same response handling as OpenAI ...
+
+openai_chat_response_free(resp);
+free(req.messages);
+openai_client_free(client);
+```
+
 ### Environment Variables
 
 Set your API key via environment:
 
 ```bash
 export OPENAI_API_KEY=sk-your-key-here
+export ANTHROPIC_API_KEY=sk-ant-your-key-here
 ```
 
 Or pass it directly in code:
 
 ```c
+// OpenAI
 OpenAI_Client* client = openai_client_new(getenv("OPENAI_API_KEY"));
+
+// Anthropic
+OpenAI_Client* client = openai_client_new(getenv("ANTHROPIC_API_KEY"));
+openai_client_set_provider(client, OPENAI_PROVIDER_ANTHROPIC);
 ```
 
 ### Custom API Base URL

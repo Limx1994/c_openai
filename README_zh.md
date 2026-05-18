@@ -1,6 +1,6 @@
 # C-OpenAI
 
-跨平台的 OpenAI API C 语言客户端，专为 MCU（微控制器）和 POSIX 系统设计。
+跨平台的 OpenAI/Anthropic API C 语言客户端，专为 MCU（微控制器）和 POSIX 系统设计。
 
 ## 特性
 
@@ -8,11 +8,10 @@
 - **双 HTTP 后端**：
   - `libcurl`：功能完整，适用于 PC 和服务器
   - `lwIP`：轻量级，适用于资源受限的 MCU（STM32、ESP32 等）
+- **多提供商支持**：
+  - OpenAI API（Chat Completions、Streaming、Embeddings）
+  - Anthropic Messages API（Chat、Streaming）
 - **可配置内存**：动态分配或静态缓冲区模式（编译时选项）
-- **核心 API 支持**：
-  - Chat Completions（聊天补全）
-  - Streaming（流式响应，SSE）
-  - Embeddings（文本嵌入）
 - **安全性**：JSON 注入防护、内存安全检查、安全的认证头处理
 
 ## 项目结构
@@ -155,18 +154,54 @@ free(req.messages);
 openai_client_free(client);
 ```
 
+### Anthropic 使用方法
+
+```c
+#include "openai.h"
+
+// 使用 Anthropic API key 创建客户端
+OpenAI_Client* client = openai_client_new("sk-ant-...");
+openai_client_set_provider(client, OPENAI_PROVIDER_ANTHROPIC);
+// base_url 自动设为 https://api.anthropic.com/v1
+
+// 与 OpenAI 相同的 API - system prompt 会自动提取
+OpenAI_ChatRequest req = {0};
+req.model = "claude-3-opus-20240229";
+req.messages = malloc(sizeof(OpenAI_Message) * 2);
+req.messages[0].role = "system";
+req.messages[0].content = "你是一个有帮助的助手。";
+req.messages[1].role = "user";
+req.messages[1].content = "你好！";
+req.message_count = 2;
+req.temperature = 0.7f;
+req.max_tokens = 1024;  // Anthropic 必填
+
+OpenAI_ChatResponse* resp = openai_chat_create(client, &req);
+// ... 与 OpenAI 相同的响应处理 ...
+
+openai_chat_response_free(resp);
+free(req.messages);
+openai_client_free(client);
+```
+
 ### 环境变量
 
 通过环境变量设置 API key：
 
 ```bash
 export OPENAI_API_KEY=sk-your-key-here
+export ANTHROPIC_API_KEY=sk-ant-your-key-here
 ```
 
 或在代码中直接传递：
 
 ```c
+// OpenAI
 OpenAI_Client* client = openai_client_new(getenv("OPENAI_API_KEY"));
+
+// Anthropic
+OpenAI_Client* client = openai_client_new(getenv("ANTHROPIC_API_KEY"));
+openai_client_set_provider(client, OPENAI_PROVIDER_ANTHROPIC);
 ```
 
 ### 自定义 API 基础 URL
