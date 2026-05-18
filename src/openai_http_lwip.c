@@ -19,6 +19,20 @@
 #include "openai_http.h"
 #include "openai_config.h"
 
+/* Case-insensitive substring search (portable, no libc dependency) */
+static char* openai_strcasestr(const char* haystack, const char* needle) {
+    if (!haystack || !needle || !*needle) return NULL;
+    size_t needle_len = strlen(needle);
+    for (; *haystack; haystack++) {
+        size_t i;
+        for (i = 0; i < needle_len && haystack[i]; i++) {
+            if (tolower((unsigned char)haystack[i]) != tolower((unsigned char)needle[i])) break;
+        }
+        if (i == needle_len) return (char*)haystack;
+    }
+    return NULL;
+}
+
 /* TLS config storage - module-level static for single-request-at-a-time use */
 static struct altcp_tls_config* s_tls_config = NULL;
 
@@ -453,9 +467,8 @@ OpenAI_HTTPResponse* openai_http_request(OpenAI_HTTPRequest* req) {
         /* Check for end of headers */
         char* header_end = strstr(buf, "\r\n\r\n");
         if (header_end) {
-            /* Parse Content-Length to read remaining body */
-            char* cl_str = strstr(buf, "Content-Length:");
-            if (!cl_str) cl_str = strstr(buf, "content-length:");
+            /* Parse Content-Length to read remaining body (case-insensitive per RFC 7230) */
+            char* cl_str = openai_strcasestr(buf, "content-length:");
             if (cl_str) {
                 cl_str += 15;
                 while (*cl_str == ' ') cl_str++;
@@ -840,9 +853,8 @@ OpenAI_HTTPResponse* openai_http_request_stream(OpenAI_HTTPRequest* req) {
         /* Check for end of headers */
         char* header_end = strstr(buf, "\r\n\r\n");
         if (header_end) {
-            /* Parse Content-Length to read remaining body */
-            char* cl_str = strstr(buf, "Content-Length:");
-            if (!cl_str) cl_str = strstr(buf, "content-length:");
+            /* Parse Content-Length to read remaining body (case-insensitive per RFC 7230) */
+            char* cl_str = openai_strcasestr(buf, "content-length:");
             if (cl_str) {
                 cl_str += 15;
                 while (*cl_str == ' ') cl_str++;
