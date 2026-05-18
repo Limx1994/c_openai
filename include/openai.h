@@ -43,6 +43,16 @@ void openai_client_free(OpenAI_Client* client);
  */
 int openai_client_set_base_url(OpenAI_Client* client, const char* base_url);
 
+/**
+ * @brief Set API provider
+ * @param client Client handle
+ * @param provider Provider type (OPENAI_PROVIDER_OPENAI or OPENAI_PROVIDER_ANTHROPIC)
+ * @return 0 on success, -1 on failure
+ *
+ * Must be called before any API requests. Default is OPENAI_PROVIDER_OPENAI.
+ */
+int openai_client_set_provider(OpenAI_Client* client, int provider);
+
 /* Chat Completions API */
 
 /**

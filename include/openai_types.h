@@ -84,6 +84,14 @@ typedef struct {
     int index;                /**< Choice index */
 } OpenAI_StreamEvent;
 
+/**
+ * @brief API provider type
+ */
+typedef enum {
+    OPENAI_PROVIDER_OPENAI = 0,      /**< OpenAI API (default) */
+    OPENAI_PROVIDER_ANTHROPIC = 1,    /**< Anthropic Messages API */
+} OpenAI_Provider;
+
 /* Client handle - forward declaration */
 struct OpenAI_Client;
 typedef struct OpenAI_Client OpenAI_Client;

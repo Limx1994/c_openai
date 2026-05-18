@@ -17,6 +17,8 @@ typedef struct {
     const char* body;        /**< Request body */
     const char* auth_header; /**< Authorization header value */
     size_t body_size;       /**< Body size in bytes */
+    const char* extra_headers; /**< Additional headers ("N: V\r\n"), or NULL */
+    int auth_mode;          /**< 0=Bearer (default), 1=x-api-key */
 } OpenAI_HTTPRequest;
 
 /**

@@ -10,6 +10,7 @@
 struct OpenAI_Client {
     char* api_key;
     char* base_url;
+    int provider;  /* OpenAI_Provider value, default OPENAI_PROVIDER_OPENAI (0) */
 };
 
 static int s_client_count = 0;
@@ -82,6 +83,17 @@ int openai_client_set_base_url(OpenAI_Client* client, const char* base_url) {
     return 0;
 }
 
+int openai_client_set_provider(OpenAI_Client* client, int provider) {
+    if (!client) return -1;
+    if (provider != OPENAI_PROVIDER_OPENAI && provider != OPENAI_PROVIDER_ANTHROPIC) {
+        OPENAI_LOG_ERROR("Invalid provider value: %d", provider);
+        return -1;
+    }
+    client->provider = provider;
+    OPENAI_LOG_DEBUG("Provider set to %d", provider);
+    return 0;
+}
+
 void openai_client_free(OpenAI_Client* client) {
     if (client) {
         if (client->api_key) free(client->api_key);
@@ -99,7 +111,9 @@ const char* openai_version(void) {
 
 /* Helper function to get effective base URL */
 static const char* get_effective_base_url(OpenAI_Client* client) {
-    return client->base_url ? client->base_url : OPENAI_API_BASE;
+    if (client->base_url) return client->base_url;
+    if (client->provider == OPENAI_PROVIDER_ANTHROPIC) return ANTHROPIC_API_BASE;
+    return OPENAI_API_BASE;
 }
 
 static char* build_chat_request_body(OpenAI_ChatRequest* req) {
@@ -232,16 +246,270 @@ static char* build_chat_request_body(OpenAI_ChatRequest* req) {
     return buf;
 }
 
+static char* build_anthropic_request_body(OpenAI_ChatRequest* req) {
+    size_t buf_size = 1024;
+    char* buf = (char*)malloc(buf_size);
+    if (!buf) return NULL;
+
+    /* First pass: collect system messages and count non-system messages */
+    char* system_content = NULL;
+    size_t system_len = 0;
+    size_t non_system_count = 0;
+
+    for (size_t i = 0; i < req->message_count && req->messages; i++) {
+        OpenAI_Message* msg = &req->messages[i];
+        if (msg->role && strcmp(msg->role, "system") == 0) {
+            /* Accumulate system messages */
+            char* escaped = openai_json_escape_string(msg->content ? msg->content : "");
+            size_t part_len = escaped ? strlen(escaped) : (msg->content ? strlen(msg->content) : 0);
+            if (system_content) {
+                char* new_sys = (char*)realloc(system_content, system_len + part_len + 3);
+                if (new_sys) {
+                    system_content = new_sys;
+                    if (system_len > 0) {
+                        system_content[system_len++] = '\\';
+                        system_content[system_len++] = 'n';
+                        system_content[system_len] = '\0';
+                    }
+                    memcpy(system_content + system_len, escaped ? escaped : (msg->content ? msg->content : ""), part_len);
+                    system_len += part_len;
+                    system_content[system_len] = '\0';
+                }
+            } else {
+                system_content = (char*)malloc(part_len + 1);
+                if (system_content) {
+                    memcpy(system_content, escaped ? escaped : (msg->content ? msg->content : ""), part_len);
+                    system_len = part_len;
+                    system_content[system_len] = '\0';
+                }
+            }
+            free(escaped);
+        } else {
+            non_system_count++;
+        }
+    }
+
+    /* Build JSON: model, max_tokens, system (if any), messages, optional params, stream */
+    char* escaped_model = openai_json_escape_string(req->model ? req->model : "claude-3-opus-20240229");
+    int offset = snprintf(buf, buf_size,
+        "{\"model\":\"%s\",\"max_tokens\":%d",
+        escaped_model ? escaped_model : "claude-3-opus-20240229",
+        req->max_tokens > 0 ? req->max_tokens : 4096);
+    free(escaped_model);
+
+    /* Add system field if present */
+    if (system_content) {
+        while (offset + (int)system_len + 64 >= (int)buf_size - 1) {
+            buf_size *= 2;
+            char* new_buf = (char*)realloc(buf, buf_size);
+            if (!new_buf) { free(system_content); free(buf); return NULL; }
+            buf = new_buf;
+        }
+        offset += snprintf(buf + offset, buf_size - offset, ",\"system\":\"%s\"", system_content);
+        free(system_content);
+    }
+
+    /* Add messages array (non-system only) */
+    offset += snprintf(buf + offset, buf_size - offset, ",\"messages\":[");
+    for (size_t i = 0; i < req->message_count && req->messages; i++) {
+        OpenAI_Message* msg = &req->messages[i];
+        if (msg->role && strcmp(msg->role, "system") == 0) continue;
+        if (msg->role && msg->content) {
+            char* escaped_content = openai_json_escape_string(msg->content);
+            char* escaped_role = openai_json_escape_string(msg->role);
+            size_t msg_len = (escaped_role ? strlen(escaped_role) : strlen(msg->role)) +
+                             (escaped_content ? strlen(escaped_content) : strlen(msg->content)) + 64;
+            while (offset + (int)msg_len >= (int)buf_size - 1) {
+                buf_size *= 2;
+                char* new_buf = (char*)realloc(buf, buf_size);
+                if (!new_buf) {
+                    free(escaped_content); free(escaped_role); free(buf);
+                    return NULL;
+                }
+                buf = new_buf;
+            }
+            int written = snprintf(buf + offset, buf_size - offset,
+                "%s{\"role\":\"%s\",\"content\":\"%s\"}",
+                (non_system_count > 0 && i > 0) ? "," : "",
+                escaped_role ? escaped_role : msg->role,
+                escaped_content ? escaped_content : msg->content);
+            if (written > 0) offset += written;
+            free(escaped_content);
+            free(escaped_role);
+        }
+    }
+    offset += snprintf(buf + offset, buf_size - offset, "]");
+
+    /* Add temperature */
+    if (req->temperature >= 0) {
+        char temp_buf[64];
+        snprintf(temp_buf, sizeof(temp_buf), ",\"temperature\":%g", req->temperature);
+        size_t temp_len = strlen(temp_buf);
+        while (offset + (int)temp_len >= (int)buf_size - 1) {
+            buf_size *= 2;
+            char* new_buf = (char*)realloc(buf, buf_size);
+            if (!new_buf) { free(buf); return NULL; }
+            buf = new_buf;
+        }
+        strcpy(buf + offset, temp_buf);
+        offset += temp_len;
+    }
+
+    /* Add top_p */
+    if (req->top_p > 0 && req->top_p < 1.0) {
+        char top_p_buf[64];
+        snprintf(top_p_buf, sizeof(top_p_buf), ",\"top_p\":%g", req->top_p);
+        size_t top_p_len = strlen(top_p_buf);
+        while (offset + (int)top_p_len >= (int)buf_size - 1) {
+            buf_size *= 2;
+            char* new_buf = (char*)realloc(buf, buf_size);
+            if (!new_buf) { free(buf); return NULL; }
+            buf = new_buf;
+        }
+        strcpy(buf + offset, top_p_buf);
+        offset += top_p_len;
+    }
+
+    /* Add stop_sequences (array format for Anthropic) */
+    if (req->stop) {
+        char* escaped_stop = openai_json_escape_string(req->stop);
+        char stop_buf[512];
+        snprintf(stop_buf, sizeof(stop_buf), ",\"stop_sequences\":[\"%s\"]",
+            escaped_stop ? escaped_stop : req->stop);
+        free(escaped_stop);
+        size_t stop_len = strlen(stop_buf);
+        while (offset + (int)stop_len >= (int)buf_size - 1) {
+            buf_size *= 2;
+            char* new_buf = (char*)realloc(buf, buf_size);
+            if (!new_buf) { free(buf); return NULL; }
+            buf = new_buf;
+        }
+        strcpy(buf + offset, stop_buf);
+        offset += stop_len;
+    }
+
+    /* Add stream flag */
+    snprintf(buf + offset, buf_size - offset, ",\"stream\":%s}",
+        req->stream ? "true" : "false");
+
+    return buf;
+}
+
+static OpenAI_ChatResponse* parse_anthropic_response(OpenAI_JSONNode* json) {
+    if (!json) return NULL;
+
+    OpenAI_ChatResponse* resp = (OpenAI_ChatResponse*)calloc(1, sizeof(OpenAI_ChatResponse));
+    if (!resp) return NULL;
+
+    /* Extract id */
+    const char* id = openai_json_get_string(json, "id");
+    if (id) {
+        resp->id = (char*)malloc(strlen(id) + 1);
+        if (resp->id) strcpy(resp->id, id);
+    }
+
+    /* Extract model */
+    const char* model = openai_json_get_string(json, "model");
+    if (model) {
+        resp->model = (char*)malloc(strlen(model) + 1);
+        if (resp->model) strcpy(resp->model, model);
+    }
+
+    /* Set object type */
+    resp->object = (char*)malloc(strlen("message") + 1);
+    if (resp->object) strcpy(resp->object, "message");
+
+    /* Extract role */
+    const char* role = openai_json_get_string(json, "role");
+
+    /* Extract content array - concatenate all text blocks */
+    OpenAI_JSONNode* content_arr = openai_json_get_object(json, "content");
+    size_t total_content_len = 0;
+    size_t text_block_count = 0;
+
+    if (content_arr && content_arr->child_count > 0) {
+        /* First pass: calculate total length */
+        for (size_t i = 0; i < (size_t)content_arr->child_count; i++) {
+            OpenAI_JSONNode* block = openai_json_get_array_item(content_arr, i);
+            if (block) {
+                const char* type = openai_json_get_string(block, "type");
+                if (type && strcmp(type, "text") == 0) {
+                    const char* text = openai_json_get_string(block, "text");
+                    if (text) {
+                        total_content_len += strlen(text);
+                        text_block_count++;
+                    }
+                }
+            }
+        }
+    }
+
+    /* Build concatenated content string */
+    if (text_block_count > 0 && total_content_len > 0) {
+        resp->choice_count = 1;
+        resp->choices = (OpenAI_Choice*)calloc(1, sizeof(OpenAI_Choice));
+        if (resp->choices) {
+            resp->choices[0].content = (char*)malloc(total_content_len + 1);
+            if (resp->choices[0].content) {
+                resp->choices[0].content[0] = '\0';
+                size_t pos = 0;
+                for (size_t i = 0; i < (size_t)content_arr->child_count; i++) {
+                    OpenAI_JSONNode* block = openai_json_get_array_item(content_arr, i);
+                    if (block) {
+                        const char* type = openai_json_get_string(block, "type");
+                        if (type && strcmp(type, "text") == 0) {
+                            const char* text = openai_json_get_string(block, "text");
+                            if (text) {
+                                size_t len = strlen(text);
+                                memcpy(resp->choices[0].content + pos, text, len);
+                                pos += len;
+                            }
+                        }
+                    }
+                }
+                resp->choices[0].content[pos] = '\0';
+            }
+            resp->choices[0].role = (char*)malloc(strlen(role ? role : "assistant") + 1);
+            if (resp->choices[0].role)
+                strcpy(resp->choices[0].role, role ? role : "assistant");
+        }
+    }
+
+    /* Extract usage */
+    OpenAI_JSONNode* usage = openai_json_get_object(json, "usage");
+    if (usage) {
+        double input_tokens = openai_json_get_number(usage, "input_tokens");
+        double output_tokens = openai_json_get_number(usage, "output_tokens");
+        char usage_buf[128];
+        snprintf(usage_buf, sizeof(usage_buf), "input_tokens=%.0f, output_tokens=%.0f",
+            input_tokens, output_tokens);
+        resp->usage = (char*)malloc(strlen(usage_buf) + 1);
+        if (resp->usage) strcpy(resp->usage, usage_buf);
+    }
+
+    return resp;
+}
+
 OpenAI_ChatResponse* openai_chat_create(OpenAI_Client* client, OpenAI_ChatRequest* req) {
     if (!client || !req) return NULL;
 
     const char* base_url = get_effective_base_url(client);
     char url[512];
-    snprintf(url, sizeof(url), "%s/chat/completions", base_url);
+
+    if (client->provider == OPENAI_PROVIDER_ANTHROPIC) {
+        snprintf(url, sizeof(url), "%s/messages", base_url);
+    } else {
+        snprintf(url, sizeof(url), "%s/chat/completions", base_url);
+    }
 
     OPENAI_LOG_INFO("Sending chat request to %s, model=%s", url, req->model ? req->model : "default");
 
-    char* body = build_chat_request_body(req);
+    char* body;
+    if (client->provider == OPENAI_PROVIDER_ANTHROPIC) {
+        body = build_anthropic_request_body(req);
+    } else {
+        body = build_chat_request_body(req);
+    }
     if (!body) {
         OPENAI_LOG_ERROR("Failed to build request body");
         return NULL;
@@ -254,6 +522,11 @@ OpenAI_ChatResponse* openai_chat_create(OpenAI_Client* client, OpenAI_ChatReques
         .auth_header = client->api_key,
         .body_size = strlen(body)
     };
+
+    if (client->provider == OPENAI_PROVIDER_ANTHROPIC) {
+        http_req.auth_mode = 1;
+        http_req.extra_headers = "anthropic-version: 2023-06-01\r\n";
+    }
 
     OpenAI_HTTPResponse* http_resp = openai_http_request(&http_req);
     free(body);
@@ -280,12 +553,17 @@ OpenAI_ChatResponse* openai_chat_create(OpenAI_Client* client, OpenAI_ChatReques
         return NULL;
     }
 
-    OpenAI_ChatResponse* resp = (OpenAI_ChatResponse*)calloc(1, sizeof(OpenAI_ChatResponse));
-    if (!resp) {
-        OPENAI_LOG_ERROR("Failed to allocate chat response structure");
-        openai_json_free(json);
-        return NULL;
-    }
+    /* Use provider-specific response parser */
+    OpenAI_ChatResponse* resp;
+    if (client->provider == OPENAI_PROVIDER_ANTHROPIC) {
+        resp = parse_anthropic_response(json);
+    } else {
+        resp = (OpenAI_ChatResponse*)calloc(1, sizeof(OpenAI_ChatResponse));
+        if (!resp) {
+            OPENAI_LOG_ERROR("Failed to allocate chat response structure");
+            openai_json_free(json);
+            return NULL;
+        }
 
     /* Extract fields from JSON */
     const char* id = openai_json_get_string(json, "id");
@@ -369,6 +647,7 @@ OpenAI_ChatResponse* openai_chat_create(OpenAI_Client* client, OpenAI_ChatReques
             resp->usage = (char*)malloc(strlen(usage_buf) + 1);
             if (resp->usage) strcpy(resp->usage, usage_buf);
         }
+    } /* end else (OpenAI) */
     }
 
     openai_json_free(json);
@@ -400,6 +679,8 @@ typedef struct {
     size_t buffer_pos;
     size_t parse_pos;
     int eof;
+    int provider;           /* OpenAI_Provider value */
+    char current_event[64]; /* For Anthropic: tracks current event: line */
 } OpenAI_StreamHandle;
 
 static int parse_sse_line(const char* line, size_t len, char* output, size_t output_size) {
@@ -443,6 +724,42 @@ static int parse_sse_line(const char* line, size_t len, char* output, size_t out
     return -1;
 }
 
+static int parse_anthropic_sse_line(const char* data, size_t data_len,
+                                     char* output, size_t output_size) {
+    /* Anthropic SSE data: {"type":"content_block_delta","index":0,
+     * "delta":{"type":"text_delta","text":"..."}} */
+    const char* text_start = strstr(data, "\"text\":\"");
+    if (!text_start) {
+        /* Also try delta.text format */
+        text_start = strstr(data, "\"delta\":{\"type\":\"text_delta\",\"text\":\"");
+        if (text_start) text_start += 34; /* skip to text value */
+        else return -1;
+    } else {
+        text_start += 8; /* skip "\"text\":\"" */
+    }
+
+    const char* p = text_start;
+    size_t content_len = 0;
+    while (*p && *p != '"' && content_len < output_size - 1) {
+        if (*p == '\\') {
+            p++;
+            if (*p == '\0') break;
+            if (*p == 'n') { output[content_len++] = '\n'; }
+            else if (*p == 't') { output[content_len++] = '\t'; }
+            else if (*p == 'r') { output[content_len++] = '\r'; }
+            else if (*p == '\\') { output[content_len++] = '\\'; }
+            else if (*p == '"') { output[content_len++] = '"'; }
+            else { output[content_len++] = *p; }
+            p++;
+        } else {
+            output[content_len++] = *p;
+            p++;
+        }
+    }
+    output[content_len] = '\0';
+    return 0;
+}
+
 static size_t find_line_start(const char* buffer, size_t size, size_t start) {
     while (start < size) {
         if (buffer[start] != '\n' && buffer[start] != '\r') {
@@ -468,7 +785,12 @@ void* openai_chat_create_stream(OpenAI_Client* client, OpenAI_ChatRequest* req) 
 
     const char* base_url = get_effective_base_url(client);
     char url[512];
-    snprintf(url, sizeof(url), "%s/chat/completions", base_url);
+
+    if (client->provider == OPENAI_PROVIDER_ANTHROPIC) {
+        snprintf(url, sizeof(url), "%s/messages", base_url);
+    } else {
+        snprintf(url, sizeof(url), "%s/chat/completions", base_url);
+    }
 
     OPENAI_LOG_INFO("Sending streaming chat request to %s, model=%s", url, req->model ? req->model : "default");
 
@@ -477,7 +799,12 @@ void* openai_chat_create_stream(OpenAI_Client* client, OpenAI_ChatRequest* req) 
     OpenAI_ChatRequest stream_req = *req;
     stream_req.stream = 1;
 
-    char* body = build_chat_request_body(&stream_req);
+    char* body;
+    if (client->provider == OPENAI_PROVIDER_ANTHROPIC) {
+        body = build_anthropic_request_body(&stream_req);
+    } else {
+        body = build_chat_request_body(&stream_req);
+    }
     if (!body) {
         OPENAI_LOG_ERROR("Failed to build streaming request body");
         return NULL;
@@ -490,6 +817,11 @@ void* openai_chat_create_stream(OpenAI_Client* client, OpenAI_ChatRequest* req) 
         .auth_header = client->api_key,
         .body_size = strlen(body)
     };
+
+    if (client->provider == OPENAI_PROVIDER_ANTHROPIC) {
+        http_req.auth_mode = 1;
+        http_req.extra_headers = "anthropic-version: 2023-06-01\r\n";
+    }
 
     OpenAI_HTTPResponse* http_resp = openai_http_request_stream(&http_req);
     free(body);
@@ -519,6 +851,8 @@ void* openai_chat_create_stream(OpenAI_Client* client, OpenAI_ChatRequest* req) 
     handle->buffer_pos = 0;
     handle->parse_pos = 0;
     handle->eof = 0;
+    handle->provider = client->provider;
+    handle->current_event[0] = '\0';
 
     /* Clean up http_resp struct but NOT the body (transferred to handle) */
     free(http_resp);
@@ -552,8 +886,42 @@ int openai_stream_read(void* stream, OpenAI_StreamEvent* event) {
             memcpy(line_buffer, handle->buffer + line_start, line_len);
             line_buffer[line_len] = '\0';
 
-            char content[512] = {0};
-            int ret = parse_sse_line(line_buffer, line_len, content, sizeof(content));
+            /* Anthropic SSE: track event type from "event: " lines */
+            if (handle->provider == OPENAI_PROVIDER_ANTHROPIC) {
+                if (line_len > 7 && strncmp(line_buffer, "event: ", 7) == 0) {
+                    size_t ev_len = line_len - 7;
+                    if (ev_len >= sizeof(handle->current_event)) ev_len = sizeof(handle->current_event) - 1;
+                    memcpy(handle->current_event, line_buffer + 7, ev_len);
+                    handle->current_event[ev_len] = '\0';
+                } else if (line_len > 6 && strncmp(line_buffer, "data: ", 6) == 0) {
+                    /* Check for message_stop */
+                    if (strcmp(handle->current_event, "message_stop") == 0) {
+                        handle->eof = 1;
+                        return OPENAI_ERR_EOF;
+                    }
+                    /* Parse content_block_delta */
+                    if (strcmp(handle->current_event, "content_block_delta") == 0) {
+                        char content[512] = {0};
+                        int ret = parse_anthropic_sse_line(line_buffer + 6, line_len - 6,
+                                                           content, sizeof(content));
+                        if (ret == 0 && content[0] != '\0') {
+                            event->content = (char*)malloc(strlen(content) + 1);
+                            if (event->content) strcpy(event->content, content);
+                            event->event_type = OPENAI_EVENT_CHUNK;
+                            handle->parse_pos = line_end + 1;
+                            if (handle->parse_pos < handle->buffer_size &&
+                                (handle->buffer[handle->parse_pos] == '\n' || handle->buffer[handle->parse_pos] == '\r')) {
+                                handle->parse_pos++;
+                            }
+                            return 0;
+                        }
+                    }
+                }
+                /* Skip empty lines and non-data lines for Anthropic */
+            } else {
+                /* OpenAI SSE parsing */
+                char content[512] = {0};
+                int ret = parse_sse_line(line_buffer, line_len, content, sizeof(content));
 
             if (ret == 1) {
                 handle->eof = 1;
@@ -590,6 +958,7 @@ int openai_stream_read(void* stream, OpenAI_StreamEvent* event) {
                 }
                 return 0;
             }
+            } /* end else (OpenAI) */
         }
 
         handle->parse_pos = line_end + 1;

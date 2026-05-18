@@ -204,7 +204,8 @@ OpenAI_HTTPResponse* openai_http_request(OpenAI_HTTPRequest* req) {
 
         /* Build HTTP request */
         size_t auth_len = req->auth_header ? strlen(req->auth_header) : 0;
-        size_t header_size = 512 + auth_len;
+        size_t extra_len = req->extra_headers ? strlen(req->extra_headers) : 0;
+        size_t header_size = 512 + auth_len + extra_len;
         char* header = (char*)malloc(header_size);
         if (!header) {
             if (s_tls_config) { altcp_tls_free_config(s_tls_config); s_tls_config = NULL; }
@@ -214,15 +215,23 @@ OpenAI_HTTPResponse* openai_http_request(OpenAI_HTTPRequest* req) {
 
         int header_len;
         if (req->auth_header) {
+            char auth_line[512];
+            if (req->auth_mode == 1) {
+                snprintf(auth_line, sizeof(auth_line), "x-api-key: %s\r\n", req->auth_header);
+            } else {
+                snprintf(auth_line, sizeof(auth_line), "Authorization: Bearer %s\r\n", req->auth_header);
+            }
             header_len = snprintf(header, header_size,
                 "POST %s HTTP/1.1\r\n"
                 "Host: %s\r\n"
-                "Authorization: Bearer %s\r\n"
+                "%s"
                 "Content-Type: application/json\r\n"
                 "Accept: application/json\r\n"
+                "%s"
                 "Content-Length: %zu\r\n"
                 "\r\n",
-                path, host, req->auth_header,
+                path, host, auth_line,
+                req->extra_headers ? req->extra_headers : "",
                 req->body ? req->body_size : 0);
         } else {
             header_len = snprintf(header, header_size,
@@ -230,9 +239,11 @@ OpenAI_HTTPResponse* openai_http_request(OpenAI_HTTPRequest* req) {
                 "Host: %s\r\n"
                 "Content-Type: application/json\r\n"
                 "Accept: application/json\r\n"
+                "%s"
                 "Content-Length: %zu\r\n"
                 "\r\n",
                 path, host,
+                req->extra_headers ? req->extra_headers : "",
                 req->body ? req->body_size : 0);
         }
 
@@ -361,7 +372,8 @@ OpenAI_HTTPResponse* openai_http_request(OpenAI_HTTPRequest* req) {
 
     /* Build HTTP request */
     size_t auth_len = req->auth_header ? strlen(req->auth_header) : 0;
-    size_t header_size = 512 + auth_len;
+    size_t extra_len = req->extra_headers ? strlen(req->extra_headers) : 0;
+    size_t header_size = 512 + auth_len + extra_len;
     char* header = (char*)malloc(header_size);
     if (!header) {
 #ifdef OPENAI_USE_LWIP
@@ -372,15 +384,23 @@ OpenAI_HTTPResponse* openai_http_request(OpenAI_HTTPRequest* req) {
 
     int header_len;
     if (req->auth_header) {
+        char auth_line[512];
+        if (req->auth_mode == 1) {
+            snprintf(auth_line, sizeof(auth_line), "x-api-key: %s\r\n", req->auth_header);
+        } else {
+            snprintf(auth_line, sizeof(auth_line), "Authorization: Bearer %s\r\n", req->auth_header);
+        }
         header_len = snprintf(header, header_size,
             "POST %s HTTP/1.1\r\n"
             "Host: %s\r\n"
-            "Authorization: Bearer %s\r\n"
+            "%s"
             "Content-Type: application/json\r\n"
             "Accept: application/json\r\n"
+            "%s"
             "Content-Length: %zu\r\n"
             "\r\n",
-            path, host, req->auth_header,
+            path, host, auth_line,
+            req->extra_headers ? req->extra_headers : "",
             req->body ? req->body_size : 0);
     } else {
         header_len = snprintf(header, header_size,
@@ -388,9 +408,11 @@ OpenAI_HTTPResponse* openai_http_request(OpenAI_HTTPRequest* req) {
             "Host: %s\r\n"
             "Content-Type: application/json\r\n"
             "Accept: application/json\r\n"
+            "%s"
             "Content-Length: %zu\r\n"
             "\r\n",
             path, host,
+            req->extra_headers ? req->extra_headers : "",
             req->body ? req->body_size : 0);
     }
 
@@ -590,7 +612,8 @@ OpenAI_HTTPResponse* openai_http_request_stream(OpenAI_HTTPRequest* req) {
 
         /* Build HTTP request for streaming */
         size_t auth_len = req->auth_header ? strlen(req->auth_header) : 0;
-        size_t header_size = 512 + auth_len;
+        size_t extra_len = req->extra_headers ? strlen(req->extra_headers) : 0;
+        size_t header_size = 512 + auth_len + extra_len;
         char* header = (char*)malloc(header_size);
         if (!header) {
             if (s_tls_config) { altcp_tls_free_config(s_tls_config); s_tls_config = NULL; }
@@ -600,15 +623,23 @@ OpenAI_HTTPResponse* openai_http_request_stream(OpenAI_HTTPRequest* req) {
 
         int header_len;
         if (req->auth_header) {
+            char auth_line[512];
+            if (req->auth_mode == 1) {
+                snprintf(auth_line, sizeof(auth_line), "x-api-key: %s\r\n", req->auth_header);
+            } else {
+                snprintf(auth_line, sizeof(auth_line), "Authorization: Bearer %s\r\n", req->auth_header);
+            }
             header_len = snprintf(header, header_size,
                 "POST %s HTTP/1.1\r\n"
                 "Host: %s\r\n"
-                "Authorization: Bearer %s\r\n"
+                "%s"
                 "Content-Type: application/json\r\n"
                 "Accept: text/event-stream\r\n"
+                "%s"
                 "Content-Length: %zu\r\n"
                 "\r\n",
-                path, host, req->auth_header,
+                path, host, auth_line,
+                req->extra_headers ? req->extra_headers : "",
                 req->body ? req->body_size : 0);
         } else {
             header_len = snprintf(header, header_size,
@@ -616,9 +647,11 @@ OpenAI_HTTPResponse* openai_http_request_stream(OpenAI_HTTPRequest* req) {
                 "Host: %s\r\n"
                 "Content-Type: application/json\r\n"
                 "Accept: text/event-stream\r\n"
+                "%s"
                 "Content-Length: %zu\r\n"
                 "\r\n",
                 path, host,
+                req->extra_headers ? req->extra_headers : "",
                 req->body ? req->body_size : 0);
         }
 
@@ -747,7 +780,8 @@ OpenAI_HTTPResponse* openai_http_request_stream(OpenAI_HTTPRequest* req) {
 
     /* Build HTTP request for streaming */
     size_t auth_len = req->auth_header ? strlen(req->auth_header) : 0;
-    size_t header_size = 512 + auth_len;
+    size_t extra_len = req->extra_headers ? strlen(req->extra_headers) : 0;
+    size_t header_size = 512 + auth_len + extra_len;
     char* header = (char*)malloc(header_size);
     if (!header) {
 #ifdef OPENAI_USE_LWIP
@@ -758,15 +792,23 @@ OpenAI_HTTPResponse* openai_http_request_stream(OpenAI_HTTPRequest* req) {
 
     int header_len;
     if (req->auth_header) {
+        char auth_line[512];
+        if (req->auth_mode == 1) {
+            snprintf(auth_line, sizeof(auth_line), "x-api-key: %s\r\n", req->auth_header);
+        } else {
+            snprintf(auth_line, sizeof(auth_line), "Authorization: Bearer %s\r\n", req->auth_header);
+        }
         header_len = snprintf(header, header_size,
             "POST %s HTTP/1.1\r\n"
             "Host: %s\r\n"
-            "Authorization: Bearer %s\r\n"
+            "%s"
             "Content-Type: application/json\r\n"
             "Accept: text/event-stream\r\n"
+            "%s"
             "Content-Length: %zu\r\n"
             "\r\n",
-            path, host, req->auth_header,
+            path, host, auth_line,
+            req->extra_headers ? req->extra_headers : "",
             req->body ? req->body_size : 0);
     } else {
         header_len = snprintf(header, header_size,
@@ -774,9 +816,11 @@ OpenAI_HTTPResponse* openai_http_request_stream(OpenAI_HTTPRequest* req) {
             "Host: %s\r\n"
             "Content-Type: application/json\r\n"
             "Accept: text/event-stream\r\n"
+            "%s"
             "Content-Length: %zu\r\n"
             "\r\n",
             path, host,
+            req->extra_headers ? req->extra_headers : "",
             req->body ? req->body_size : 0);
     }
 

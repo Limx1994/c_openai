@@ -27,8 +27,10 @@
 /* API Base URL - conditional on TLS setting */
 #if OPENAI_USE_TLS
 #define OPENAI_API_BASE "https://api.openai.com/v1"
+#define ANTHROPIC_API_BASE "https://api.anthropic.com/v1"
 #else
 #define OPENAI_API_BASE "http://api.openai.com/v1"
+#define ANTHROPIC_API_BASE "http://api.anthropic.com/v1"
 #endif
 
 /* Version */
