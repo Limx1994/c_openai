@@ -25,11 +25,4 @@ typedef enum {
     OPENAI_ERR_EOF = -101             /**< End of stream (streaming) */
 } OpenAI_ErrorCode;
 
-/**
- * @brief Get error code string
- * @param code Error code
- * @return Human-readable error string
- */
-const char* openai_error_str(OpenAI_ErrorCode code);
-
 #endif /* OPENAI_ERROR_H */

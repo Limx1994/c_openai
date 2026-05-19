@@ -222,7 +222,6 @@ openai_client_set_base_url(client, "https://your-proxy.com/v1");
 | `openai_client_new(api_key)` | Create new client |
 | `openai_client_free(client)` | Free client and resources |
 | `openai_client_set_base_url(client, url)` | Set custom API base URL (e.g., for Azure, proxies) |
-| `openai_version()` | Get library version |
 
 ### Chat Completions
 
@@ -252,7 +251,6 @@ openai_client_set_base_url(client, "https://your-proxy.com/v1");
 |----------|-------------|
 | `openai_json_parse(json_string)` | Parse JSON string into DOM |
 | `openai_json_free(node)` | Free JSON DOM |
-| `openai_json_dump(node)` | Convert JSON DOM to string (deprecated) |
 | `openai_json_escape_string(str)` | Escape string for JSON (prevents injection) |
 | `openai_json_get_string(parent, key)` | Get string value from object |
 | `openai_json_get_number(parent, key)` | Get number value from object |
@@ -260,11 +258,6 @@ openai_client_set_base_url(client, "https://your-proxy.com/v1");
 | `openai_json_get_array_item(parent, index)` | Get array item by index |
 
 ## Error Handling
-
-```c
-const char* err_str = openai_error_str(OPENAI_ERR_NETWORK);
-// Returns: "Network error"
-```
 
 Error codes:
 - `OPENAI_OK` - Success

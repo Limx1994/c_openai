@@ -115,12 +115,4 @@ OpenAI_EmbeddingResponse* openai_embeddings_create(OpenAI_Client* client, OpenAI
  */
 void openai_embedding_response_free(OpenAI_EmbeddingResponse* resp);
 
-/* Utility */
-
-/**
- * @brief Get library version string
- * @return Version string (e.g., "1.0.0")
- */
-const char* openai_version(void);
-
 #endif /* OPENAI_H */

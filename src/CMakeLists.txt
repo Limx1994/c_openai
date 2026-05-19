@@ -1,6 +1,5 @@
 add_library(openai_client
     openai_client.c
-    openai_error.c
     openai_json.c
 )
 

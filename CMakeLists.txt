@@ -44,7 +44,6 @@ if(OPENAI_HTTP_BACKEND EQUAL OPENAI_BACKEND_CURL)
         message(FATAL_ERROR "libcurl submodule not found. Run: git submodule update --init --recursive")
     endif()
     add_subdirectory(third_party/libcurl)
-    target_link_libraries(openai INTERFACE curl)
 endif()
 
 # Installation
