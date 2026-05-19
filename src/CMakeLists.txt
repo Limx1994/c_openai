@@ -6,7 +6,6 @@ add_library(openai_client
 
 target_include_directories(openai_client PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../include>
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../cJSON>
 )
 
 # Select HTTP backend based on config

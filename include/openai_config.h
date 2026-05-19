@@ -6,6 +6,9 @@
  * before including openai.h, or define them in your build system.
  */
 
+#ifndef OPENAI_CONFIG_H
+#define OPENAI_CONFIG_H
+
 /* HTTP backend selection */
 #define OPENAI_BACKEND_CURL 0  /**< Use libcurl backend (default, for PC/server) */
 #define OPENAI_BACKEND_LWIP 1   /**< Use lwIP backend (for embedded/MCU) */

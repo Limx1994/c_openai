@@ -16,10 +16,8 @@ endif()
 
 # Include directories
 include_directories(${CMAKE_SOURCE_DIR}/include)
-include_directories(${CMAKE_SOURCE_DIR}/cJSON)
 
 # Add subdirectories
-add_subdirectory(cJSON)
 add_subdirectory(src)
 if(OPENAI_BUILD_EXAMPLES)
     add_subdirectory(example)
@@ -38,7 +36,6 @@ add_library(openai INTERFACE)
 target_link_libraries(openai INTERFACE openai_client)
 target_include_directories(openai INTERFACE
     $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/include>
-    $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/cJSON>
 )
 
 # Dependencies for libcurl backend (using git submodule)
@@ -52,4 +49,3 @@ endif()
 
 # Installation
 install(DIRECTORY include/ DESTINATION include)
-install(DIRECTORY cJSON/ DESTINATION include/cJSON)
