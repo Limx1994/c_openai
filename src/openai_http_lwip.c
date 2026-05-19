@@ -329,7 +329,7 @@ OpenAI_HTTPResponse* openai_http_request(OpenAI_HTTPRequest* req) {
             }
         }
 
-        s_tls_config = NULL;
+        if (s_tls_config) { altcp_tls_free_config(s_tls_config); s_tls_config = NULL; }
         altcp_close(pcb);
 
         OpenAI_HTTPResponse* resp = (OpenAI_HTTPResponse*)calloc(1, sizeof(OpenAI_HTTPResponse));
@@ -737,7 +737,7 @@ OpenAI_HTTPResponse* openai_http_request_stream(OpenAI_HTTPRequest* req) {
             }
         }
 
-        s_tls_config = NULL;
+        if (s_tls_config) { altcp_tls_free_config(s_tls_config); s_tls_config = NULL; }
         altcp_close(pcb);
 
         OpenAI_HTTPResponse* resp = (OpenAI_HTTPResponse*)calloc(1, sizeof(OpenAI_HTTPResponse));
