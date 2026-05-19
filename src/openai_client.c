@@ -448,6 +448,9 @@ static OpenAI_ChatResponse* parse_anthropic_response(OpenAI_JSONNode* json) {
     if (text_block_count > 0 && total_content_len > 0) {
         resp->choice_count = 1;
         resp->choices = (OpenAI_Choice*)calloc(1, sizeof(OpenAI_Choice));
+        if (!resp->choices) {
+            resp->choice_count = 0;
+        }
         if (resp->choices) {
             resp->choices[0].content = (char*)malloc(total_content_len + 1);
             if (resp->choices[0].content) {
