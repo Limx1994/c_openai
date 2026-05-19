@@ -222,7 +222,6 @@ openai_client_set_base_url(client, "https://your-proxy.com/v1");
 | `openai_client_new(api_key)` | 创建新客户端 |
 | `openai_client_free(client)` | 释放客户端和资源 |
 | `openai_client_set_base_url(client, url)` | 设置自定义 API 基础 URL（用于 Azure、代理服务器等） |
-| `openai_version()` | 获取库版本 |
 
 ### 聊天补全
 
@@ -252,7 +251,6 @@ openai_client_set_base_url(client, "https://your-proxy.com/v1");
 |------|------|
 | `openai_json_parse(json_string)` | 解析 JSON 字符串为 DOM |
 | `openai_json_free(node)` | 释放 JSON DOM |
-| `openai_json_dump(node)` | 将 JSON DOM 转换为字符串（已弃用） |
 | `openai_json_escape_string(str)` | 转义 JSON 字符串（防止注入） |
 | `openai_json_get_string(parent, key)` | 从对象获取字符串值 |
 | `openai_json_get_number(parent, key)` | 从对象获取数字值 |
@@ -260,11 +258,6 @@ openai_client_set_base_url(client, "https://your-proxy.com/v1");
 | `openai_json_get_array_item(parent, index)` | 按索引获取数组项 |
 
 ## 错误处理
-
-```c
-const char* err_str = openai_error_str(OPENAI_ERR_NETWORK);
-// 返回: "Network error"
-```
 
 错误码：
 - `OPENAI_OK` - 成功

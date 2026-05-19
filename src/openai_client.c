@@ -105,10 +105,6 @@ void openai_client_free(OpenAI_Client* client) {
     }
 }
 
-const char* openai_version(void) {
-    return OPENAI_VERSION;
-}
-
 /* Helper function to get effective base URL */
 static const char* get_effective_base_url(OpenAI_Client* client) {
     if (client->base_url) return client->base_url;

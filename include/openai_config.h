@@ -9,14 +9,6 @@
 #ifndef OPENAI_CONFIG_H
 #define OPENAI_CONFIG_H
 
-/* HTTP backend selection */
-#define OPENAI_BACKEND_CURL 0  /**< Use libcurl backend (default, for PC/server) */
-#define OPENAI_BACKEND_LWIP 1   /**< Use lwIP backend (for embedded/MCU) */
-
-#ifndef OPENAI_HTTP_BACKEND
-#define OPENAI_HTTP_BACKEND OPENAI_BACKEND_CURL  /**< Select HTTP backend */
-#endif
-
 /* Connection settings */
 #ifndef OPENAI_TIMEOUT
 #define OPENAI_TIMEOUT 30  /**< Request timeout in seconds */
@@ -35,9 +27,6 @@
 #define OPENAI_API_BASE "http://api.openai.com/v1"
 #define ANTHROPIC_API_BASE "http://api.anthropic.com/v1"
 #endif
-
-/* Version */
-#define OPENAI_VERSION "1.0.0"  /**< Library version */
 
 /* Logging */
 #ifndef OPENAI_LOG_ENABLED
