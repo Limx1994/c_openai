@@ -29,9 +29,8 @@ c_openai/
 │   ├── openai_client.c   # 核心客户端
 │   ├── openai_http_curl.c    # libcurl 后端
 │   ├── openai_http_lwip.c     # lwIP 后端
-│   ├── openai_json.c     # JSON 工具
+│   ├── openai_json.c     # JSON 解析器（自定义实现）
 │   └── openai_error.c    # 错误处理
-├── cJSON/                # JSON 解析器（cJSON 库）
 ├── third_party/          # 第三方库
 │   ├── libcurl/          # libcurl HTTP 库（git submodule）
 │   ├── lwip/             # lwIP TCP/IP 协议栈（git submodule）
@@ -321,8 +320,7 @@ make
 1. 将 lwIP 添加到项目中
 2. 配置 `OPENAI_HTTP_BACKEND=OPENAI_BACKEND_LWIP`
 3. 确保 `OPENAI_USE_MALLOC=0` 以启用无 malloc 模式
-4. 将 cJSON 库移植到目标平台
-5. 如需 HTTPS 支持，在 `lwipopts.h` 中启用 ALTCP + mbedTLS：
+4. 如需 HTTPS 支持，在 `lwipopts.h` 中启用 ALTCP + mbedTLS：
    ```c
    #define LWIP_ALTCP             1
    #define LWIP_ALTCP_TLS         1
