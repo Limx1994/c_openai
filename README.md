@@ -29,9 +29,8 @@ c_openai/
 │   ├── openai_client.c   # Core client
 │   ├── openai_http_curl.c    # libcurl backend
 │   ├── openai_http_lwip.c     # lwIP backend
-│   ├── openai_json.c     # JSON utilities
+│   ├── openai_json.c     # JSON parser (custom implementation)
 │   └── openai_error.c    # Error handling
-├── cJSON/                # JSON parser (cJSON library)
 ├── third_party/          # Third-party libraries
 │   ├── libcurl/          # libcurl HTTP library (git submodule)
 │   ├── lwip/             # lwIP TCP/IP stack (git submodule)
@@ -321,8 +320,7 @@ make
 1. Add lwIP to your project
 2. Configure `OPENAI_HTTP_BACKEND=OPENAI_BACKEND_LWIP`
 3. Ensure `OPENAI_USE_MALLOC=0` for no-malloc mode
-4. Port the cJSON library to your platform
-5. For HTTPS support, enable ALTCP + mbedTLS in `lwipopts.h`:
+4. For HTTPS support, enable ALTCP + mbedTLS in `lwipopts.h`:
    ```c
    #define LWIP_ALTCP             1
    #define LWIP_ALTCP_TLS         1
