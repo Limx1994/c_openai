@@ -10,10 +10,99 @@
 
 /* lwIP includes - adjust paths as needed for your platform */
 #ifdef OPENAI_USE_LWIP
+/* Prevent system from redefining struct timeval/fd_set (lwIP provides them) */
+#define _SYS__TIMEVAL_H_
+#define _SYS_SELECT_H
 #include <lwip/sockets.h>
 #include <lwip/netdb.h>
 #include <lwip/ip_addr.h>
 #include <lwip/altcp_tls.h>
+
+/* ============================================================
+ * altcp_read compatibility layer (removed in lwIP 2.2.x)
+ * Uses altcp_recv callback + ring buffer for blocking reads
+ * ============================================================ */
+#define ALTCP_RX_BUF_SIZE 8192
+
+typedef struct {
+    uint8_t buf[ALTCP_RX_BUF_SIZE];
+    volatile uint32_t head;
+    volatile uint32_t tail;
+    volatile uint8_t data_ready;
+} altcp_rx_ring_t;
+
+/* Per-PCB receive ring buffer (single-request-at-a-time) */
+static altcp_rx_ring_t s_rx_ring;
+static struct altcp_pcb *s_rx_pcb = NULL;
+
+static err_t altcp_recv_cb(void *arg, struct altcp_pcb *pcb,
+                          struct pbuf *p, err_t err) {
+    (void)arg; (void)pcb; (void)err;
+    if (!p) {
+        /* Connection closed */
+        s_rx_ring.data_ready = 2; /* EOF signal */
+        return ERR_OK;
+    }
+    /* Copy pbuf data into ring buffer */
+    struct pbuf *q;
+    for (q = p; q != NULL; q = q->next) {
+        uint32_t h = s_rx_ring.head;
+        uint32_t t = s_rx_ring.tail;
+        uint32_t free_space = (t + ALTCP_RX_BUF_SIZE - h - 1) % ALTCP_RX_BUF_SIZE;
+        uint32_t to_copy = q->len < free_space ? q->len : free_space;
+        for (uint32_t i = 0; i < to_copy; i++) {
+            s_rx_ring.buf[h] = ((uint8_t *)q->payload)[i];
+            h = (h + 1) % ALTCP_RX_BUF_SIZE;
+        }
+        s_rx_ring.head = h;
+    }
+    s_rx_ring.data_ready = 1;
+    altcp_recved(pcb, p->tot_len);
+    pbuf_free(p);
+    return ERR_OK;
+}
+
+static void altcp_read_install_recv(struct altcp_pcb *pcb) {
+    s_rx_pcb = pcb;
+    s_rx_ring.head = 0;
+    s_rx_ring.tail = 0;
+    s_rx_ring.data_ready = 0;
+    altcp_recv(pcb, altcp_recv_cb);
+}
+
+static int altcp_read(struct altcp_pcb *pcb, void *buf, size_t len) {
+    (void)pcb;
+    if (!s_rx_pcb) return -1;
+
+    uint32_t t = s_rx_ring.tail;
+    uint32_t h = s_rx_ring.head;
+
+    /* Wait for data or EOF */
+    uint32_t timeout_ms = 30000; /* 30s timeout */
+    uint32_t waited = 0;
+    while (t == h && s_rx_ring.data_ready != 2) {
+        if (waited >= timeout_ms) return 0; /* timeout */
+        /* In bare-metal: call sys_check_timeouts() here */
+        waited++;
+    }
+
+    if (s_rx_ring.data_ready == 2 && t == h) {
+        return 0; /* EOF */
+    }
+
+    /* Read from ring buffer */
+    size_t available = (h + ALTCP_RX_BUF_SIZE - t) % ALTCP_RX_BUF_SIZE;
+    size_t to_read = len < available ? len : available;
+    uint8_t *dst = (uint8_t *)buf;
+    for (size_t i = 0; i < to_read; i++) {
+        dst[i] = s_rx_ring.buf[t];
+        t = (t + 1) % ALTCP_RX_BUF_SIZE;
+    }
+    s_rx_ring.tail = t;
+    if (t == h) s_rx_ring.data_ready = 0;
+
+    return (int)to_read;
+}
 #endif
 
 #include "openai_http.h"
@@ -201,6 +290,9 @@ OpenAI_HTTPResponse* openai_http_request(OpenAI_HTTPRequest* req) {
             altcp_close(pcb);
             return NULL;
         }
+
+        /* Install recv callback for altcp_read compatibility */
+        altcp_read_install_recv(pcb);
 
         /* Build HTTP request */
         size_t auth_len = req->auth_header ? strlen(req->auth_header) : 0;
@@ -609,6 +701,9 @@ OpenAI_HTTPResponse* openai_http_request_stream(OpenAI_HTTPRequest* req) {
             altcp_close(pcb);
             return NULL;
         }
+
+        /* Install recv callback for altcp_read compatibility */
+        altcp_read_install_recv(pcb);
 
         /* Build HTTP request for streaming */
         size_t auth_len = req->auth_header ? strlen(req->auth_header) : 0;

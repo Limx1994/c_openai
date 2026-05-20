@@ -28,17 +28,19 @@ c_openai/
 ├── src/                  # Implementation
 │   ├── openai_client.c   # Core client
 │   ├── openai_http_curl.c    # libcurl backend
-│   ├── openai_http_lwip.c     # lwIP backend
-│   ├── openai_json.c     # JSON parser (custom implementation)
-│   └── openai_error.c    # Error handling
-├── third_party/          # Third-party libraries
-│   ├── libcurl/          # libcurl HTTP library (git submodule)
-│   ├── lwip/             # lwIP TCP/IP stack (git submodule)
-│   ├── mbedtls/          # mbedTLS library (git submodule)
+│   ├── openai_http_lwip.c    # lwIP backend
+│   └── openai_json.c     # JSON parser (custom implementation)
+├── third_party/          # Third-party libraries (git submodules)
+│   ├── libcurl/          # libcurl HTTP library
+│   ├── lwip/             # lwIP TCP/IP stack
+│   ├── mbedtls/          # mbedTLS encryption library
 │   └── CMakeLists.txt    # Third-party build config
 ├── example/              # Example code
-│   └── chat_example.c
-├── CMakeLists.txt        # Build configuration
+│   ├── chat_example.c    # OpenAI Chat Completions
+│   └── anthropic_example.c  # Anthropic Messages API
+├── build.sh              # libcurl build script (MinGW/MSYS2)
+├── build_lwip.sh         # lwIP build script (ARM GCC)
+├── CMakeLists.txt        # CMake build configuration
 ├── README.md             # English documentation
 ├── README_zh.md          # Chinese documentation
 └── CLAUDE.md             # Project specification
@@ -58,6 +60,11 @@ c_openai/
 mkdir build && cd build
 cmake ..
 make
+```
+
+Or use the build script (MinGW/MSYS2):
+```bash
+bash build.sh
 ```
 
 ### lwIP Backend (for embedded/MCU)
@@ -88,10 +95,18 @@ Then configure in `openai_config.h`:
 
 ### Build with lwIP (for embedded/MCU)
 
+Using the build script (recommended, requires ARM GCC from STM32CubeIDE):
+```bash
+bash build_lwip.sh
+```
+
+Or with CMake:
 ```bash
 cmake .. -DOPENAI_HTTP_BACKEND=OPENAI_BACKEND_LWIP
 make
 ```
+
+**Note**: For ARM Cortex-M targets, `MBEDTLS_HAVE_ASM` must be disabled in `third_party/mbedtls/tf-psa-crypto/include/psa/crypto_config.h` due to register constraints.
 
 ### Build with static memory (no malloc, for bare-metal)
 
