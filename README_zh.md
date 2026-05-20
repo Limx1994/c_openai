@@ -28,17 +28,19 @@ c_openai/
 ├── src/                  # 实现
 │   ├── openai_client.c   # 核心客户端
 │   ├── openai_http_curl.c    # libcurl 后端
-│   ├── openai_http_lwip.c     # lwIP 后端
-│   ├── openai_json.c     # JSON 解析器（自定义实现）
-│   └── openai_error.c    # 错误处理
-├── third_party/          # 第三方库
-│   ├── libcurl/          # libcurl HTTP 库（git submodule）
-│   ├── lwip/             # lwIP TCP/IP 协议栈（git submodule）
-│   ├── mbedtls/          # mbedTLS 加密库（git submodule）
+│   ├── openai_http_lwip.c    # lwIP 后端
+│   └── openai_json.c     # JSON 解析器（自定义实现）
+├── third_party/          # 第三方库（git 子模块）
+│   ├── libcurl/          # libcurl HTTP 库
+│   ├── lwip/             # lwIP TCP/IP 协议栈
+│   ├── mbedtls/          # mbedTLS 加密库
 │   └── CMakeLists.txt    # 第三方库构建配置
 ├── example/              # 示例代码
-│   └── chat_example.c
-├── CMakeLists.txt        # 构建配置
+│   ├── chat_example.c    # OpenAI Chat Completions
+│   └── anthropic_example.c  # Anthropic Messages API
+├── build.sh              # libcurl 构建脚本（MinGW/MSYS2）
+├── build_lwip.sh         # lwIP 构建脚本（ARM GCC）
+├── CMakeLists.txt        # CMake 构建配置
 ├── README.md             # 英文文档
 ├── README_zh.md          # 中文文档
 └── CLAUDE.md             # 项目规范
@@ -58,6 +60,11 @@ c_openai/
 mkdir build && cd build
 cmake ..
 make
+```
+
+或使用构建脚本（MinGW/MSYS2）：
+```bash
+bash build.sh
 ```
 
 ### lwIP 后端（用于嵌入式/MCU）
@@ -88,10 +95,18 @@ git submodule update --init --recursive
 
 ### 使用 lwIP 构建（用于嵌入式/MCU）
 
+使用构建脚本（推荐，需要 STM32CubeIDE 中的 ARM GCC）：
+```bash
+bash build_lwip.sh
+```
+
+或使用 CMake：
 ```bash
 cmake .. -DOPENAI_HTTP_BACKEND=OPENAI_BACKEND_LWIP
 make
 ```
+
+**注意**：ARM Cortex-M 平台需要在 `third_party/mbedtls/tf-psa-crypto/include/psa/crypto_config.h` 中禁用 `MBEDTLS_HAVE_ASM`（寄存器不足）。
 
 ### 使用静态内存构建（无 malloc，用于裸机）
 

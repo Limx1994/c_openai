@@ -17,18 +17,23 @@ endif()
 # Include directories
 include_directories(${CMAKE_SOURCE_DIR}/include)
 
-# Add subdirectories
-add_subdirectory(src)
-if(OPENAI_BUILD_EXAMPLES)
-    add_subdirectory(example)
-endif()
-
-# Third-party libraries for lwIP backend
-if(OPENAI_HTTP_BACKEND EQUAL OPENAI_BACKEND_LWIP)
+# Third-party libraries (must be added before src so targets exist for linking)
+if(OPENAI_HTTP_BACKEND EQUAL OPENAI_BACKEND_CURL)
+    if(NOT EXISTS ${CMAKE_SOURCE_DIR}/third_party/libcurl/CMakeLists.txt)
+        message(FATAL_ERROR "libcurl submodule not found. Run: git submodule update --init --recursive")
+    endif()
+    add_subdirectory(third_party/libcurl)
+elseif(OPENAI_HTTP_BACKEND EQUAL OPENAI_BACKEND_LWIP)
     if(NOT EXISTS ${CMAKE_SOURCE_DIR}/third_party/lwip/src/include/lwip/opt.h)
         message(FATAL_ERROR "lwIP submodule not found. Run: git submodule update --init --recursive")
     endif()
     add_subdirectory(third_party)
+endif()
+
+# Application source
+add_subdirectory(src)
+if(OPENAI_BUILD_EXAMPLES)
+    add_subdirectory(example)
 endif()
 
 # Main library
@@ -37,14 +42,6 @@ target_link_libraries(openai INTERFACE openai_client)
 target_include_directories(openai INTERFACE
     $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/include>
 )
-
-# Dependencies for libcurl backend (using git submodule)
-if(OPENAI_HTTP_BACKEND EQUAL OPENAI_BACKEND_CURL)
-    if(NOT EXISTS ${CMAKE_SOURCE_DIR}/third_party/libcurl/CMakeLists.txt)
-        message(FATAL_ERROR "libcurl submodule not found. Run: git submodule update --init --recursive")
-    endif()
-    add_subdirectory(third_party/libcurl)
-endif()
 
 # Installation
 install(DIRECTORY include/ DESTINATION include)
