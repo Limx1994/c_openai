@@ -1,6 +1,9 @@
 /*
  * lwIP HTTP backend for embedded systems
  * Requires lwIP socket API (include lwip/sockets.h)
+ *
+ * This entire file is guarded by OPENAI_USE_LWIP.
+ * When not defined, the file compiles to an empty translation unit.
  */
 
 #include <stdio.h>
@@ -8,7 +11,6 @@
 #include <string.h>
 #include <ctype.h>
 
-/* lwIP includes - adjust paths as needed for your platform */
 #ifdef OPENAI_USE_LWIP
 /* Prevent system from redefining struct timeval/fd_set (lwIP provides them) */
 #define _SYS__TIMEVAL_H_
@@ -103,7 +105,6 @@ static int altcp_read(struct altcp_pcb *pcb, void *buf, size_t len) {
 
     return (int)to_read;
 }
-#endif
 
 #include "openai_http.h"
 #include "openai_config.h"
@@ -1065,3 +1066,5 @@ OpenAI_HTTPResponse* openai_http_request_stream(OpenAI_HTTPRequest* req) {
     free(buf);
     return resp;
 }
+
+#endif /* OPENAI_USE_LWIP */
