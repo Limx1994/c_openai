@@ -265,7 +265,9 @@ openai_client_set_base_url(client, "https://your-proxy.com/v1");
 | `openai_json_get_string(parent, key)` | 从对象获取字符串值 |
 | `openai_json_get_number(parent, key)` | 从对象获取数字值 |
 | `openai_json_get_object(parent, key)` | 按键获取子对象 |
-| `openai_json_get_array_item(parent, index)` | 按索引获取数组项 |
+| `openai_json_get_array_item(parent, index)` | 按索引获取数组项（O(n)，推荐使用迭代器） |
+| `openai_json_array_first(parent)` | 获取数组首元素（迭代器模式） |
+| `openai_json_array_next(current)` | 获取数组下一元素（迭代器模式） |
 
 ## 错误处理
 

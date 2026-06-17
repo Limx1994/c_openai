@@ -1080,7 +1080,7 @@ ESP-IDF 自带 lwIP 和 mbedTLS，**无需使用项目子模块**：
 5. **无重试机制** — 请求失败不会自动重试
 6. **无代理支持** — lwIP 后端不支持 HTTP 代理
 7. **DNS 无缓存** — 每次请求都做 DNS 查询
-8. **TLS 证书验证** — 默认跳过证书验证（`OPENAI_TLS_CERT_VERIFY` 未实现），生产环境需注意
+8. **TLS 证书验证** — 默认跳过证书验证（`OPENAI_USE_TLS=1` 启用 TLS，证书验证由 mbedTLS 配置控制）
 
 ---
 
