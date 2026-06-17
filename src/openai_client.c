@@ -124,36 +124,37 @@ static char* build_chat_request_body(OpenAI_ChatRequest* req) {
         "{\"model\":\"%s\",\"messages\":[", escaped_model ? escaped_model : "gpt-3.5-turbo");
     free(escaped_model);
 
+    int first_msg = 1;
     for (size_t i = 0; i < req->message_count && req->messages; i++) {
         OpenAI_Message* msg = &req->messages[i];
-        if (msg->role && msg->content) {
-            /* Escape content to prevent JSON injection */
-            char* escaped_content = openai_json_escape_string(msg->content);
-            char* escaped_role = openai_json_escape_string(msg->role);
+        if (!msg->role || !msg->content) continue;
+        /* Escape content to prevent JSON injection */
+        char* escaped_content = openai_json_escape_string(msg->content);
+        char* escaped_role = openai_json_escape_string(msg->role);
 
-            /* Calculate required space before writing */
-            size_t msg_len = (escaped_role ? strlen(escaped_role) : strlen(msg->role)) +
-                             (escaped_content ? strlen(escaped_content) : strlen(msg->content)) + 64;
-            while (offset + msg_len >= buf_size) {
-                buf_size *= 2;
-                char* new_buf = (char*)realloc(buf, buf_size);
-                if (!new_buf) {
-                    free(escaped_content);
-                    free(escaped_role);
-                    free(buf);
-                    return NULL;
-                }
-                buf = new_buf;
+        /* Calculate required space before writing */
+        size_t msg_len = (escaped_role ? strlen(escaped_role) : strlen(msg->role)) +
+                         (escaped_content ? strlen(escaped_content) : strlen(msg->content)) + 64;
+        while (offset + msg_len >= buf_size) {
+            buf_size *= 2;
+            char* new_buf = (char*)realloc(buf, buf_size);
+            if (!new_buf) {
+                free(escaped_content);
+                free(escaped_role);
+                free(buf);
+                return NULL;
             }
-
-            int written = snprintf(buf + offset, buf_size - offset,
-                "%s{\"role\":\"%s\",\"content\":\"%s\"}",
-                i > 0 ? "," : "", escaped_role ? escaped_role : msg->role,
-                escaped_content ? escaped_content : msg->content);
-            offset += written;
-            free(escaped_content);
-            free(escaped_role);
+            buf = new_buf;
         }
+
+        int written = snprintf(buf + offset, buf_size - offset,
+            "%s{\"role\":\"%s\",\"content\":\"%s\"}",
+            first_msg ? "" : ",", escaped_role ? escaped_role : msg->role,
+            escaped_content ? escaped_content : msg->content);
+        offset += written;
+        first_msg = 0;
+        free(escaped_content);
+        free(escaped_role);
     }
 
     /* Add optional parameters */
@@ -209,18 +210,23 @@ static char* build_chat_request_body(OpenAI_ChatRequest* req) {
     /* Add stop parameter */
     if (req->stop) {
         char* escaped_stop = openai_json_escape_string(req->stop);
-        char stop_buf[512];
-        snprintf(stop_buf, sizeof(stop_buf), ",\"stop\":\"%s\"", escaped_stop ? escaped_stop : req->stop);
-        free(escaped_stop);
-        size_t stop_len = strlen(stop_buf);
-        while (offset + stop_len >= buf_size - 1) {
-            buf_size *= 2;
-            char* new_buf = (char*)realloc(buf, buf_size);
-            if (!new_buf) { free(buf); return NULL; }
-            buf = new_buf;
+        const char* stop_str = escaped_stop ? escaped_stop : req->stop;
+        size_t stop_param_len = strlen(stop_str) + 32;
+        char* stop_buf = (char*)malloc(stop_param_len);
+        if (stop_buf) {
+            snprintf(stop_buf, stop_param_len, ",\"stop\":\"%s\"", stop_str);
+            size_t stop_len = strlen(stop_buf);
+            while (offset + stop_len >= buf_size - 1) {
+                buf_size *= 2;
+                char* new_buf = (char*)realloc(buf, buf_size);
+                if (!new_buf) { free(stop_buf); free(escaped_stop); free(buf); return NULL; }
+                buf = new_buf;
+            }
+            strcpy(buf + offset, stop_buf);
+            offset += stop_len;
+            free(stop_buf);
         }
-        strcpy(buf + offset, stop_buf);
-        offset += stop_len;
+        free(escaped_stop);
     }
 
     /* Close messages array and object */
@@ -307,32 +313,33 @@ static char* build_anthropic_request_body(OpenAI_ChatRequest* req) {
 
     /* Add messages array (non-system only) */
     offset += snprintf(buf + offset, buf_size - offset, ",\"messages\":[");
+    int first_non_system = 1;
     for (size_t i = 0; i < req->message_count && req->messages; i++) {
         OpenAI_Message* msg = &req->messages[i];
         if (msg->role && strcmp(msg->role, "system") == 0) continue;
-        if (msg->role && msg->content) {
-            char* escaped_content = openai_json_escape_string(msg->content);
-            char* escaped_role = openai_json_escape_string(msg->role);
-            size_t msg_len = (escaped_role ? strlen(escaped_role) : strlen(msg->role)) +
-                             (escaped_content ? strlen(escaped_content) : strlen(msg->content)) + 64;
-            while (offset + (int)msg_len >= (int)buf_size - 1) {
-                buf_size *= 2;
-                char* new_buf = (char*)realloc(buf, buf_size);
-                if (!new_buf) {
-                    free(escaped_content); free(escaped_role); free(buf);
-                    return NULL;
-                }
-                buf = new_buf;
+        if (!msg->role || !msg->content) continue;
+        char* escaped_content = openai_json_escape_string(msg->content);
+        char* escaped_role = openai_json_escape_string(msg->role);
+        size_t msg_len = (escaped_role ? strlen(escaped_role) : strlen(msg->role)) +
+                         (escaped_content ? strlen(escaped_content) : strlen(msg->content)) + 64;
+        while (offset + (int)msg_len >= (int)buf_size - 1) {
+            buf_size *= 2;
+            char* new_buf = (char*)realloc(buf, buf_size);
+            if (!new_buf) {
+                free(escaped_content); free(escaped_role); free(buf);
+                return NULL;
             }
-            int written = snprintf(buf + offset, buf_size - offset,
-                "%s{\"role\":\"%s\",\"content\":\"%s\"}",
-                (non_system_count > 0 && i > 0) ? "," : "",
-                escaped_role ? escaped_role : msg->role,
-                escaped_content ? escaped_content : msg->content);
-            if (written > 0) offset += written;
-            free(escaped_content);
-            free(escaped_role);
+            buf = new_buf;
         }
+        int written = snprintf(buf + offset, buf_size - offset,
+            "%s{\"role\":\"%s\",\"content\":\"%s\"}",
+            first_non_system ? "" : ",",
+            escaped_role ? escaped_role : msg->role,
+            escaped_content ? escaped_content : msg->content);
+        if (written > 0) offset += written;
+        first_non_system = 0;
+        free(escaped_content);
+        free(escaped_role);
     }
     offset += snprintf(buf + offset, buf_size - offset, "]");
 
@@ -369,19 +376,23 @@ static char* build_anthropic_request_body(OpenAI_ChatRequest* req) {
     /* Add stop_sequences (array format for Anthropic) */
     if (req->stop) {
         char* escaped_stop = openai_json_escape_string(req->stop);
-        char stop_buf[512];
-        snprintf(stop_buf, sizeof(stop_buf), ",\"stop_sequences\":[\"%s\"]",
-            escaped_stop ? escaped_stop : req->stop);
-        free(escaped_stop);
-        size_t stop_len = strlen(stop_buf);
-        while (offset + (int)stop_len >= (int)buf_size - 1) {
-            buf_size *= 2;
-            char* new_buf = (char*)realloc(buf, buf_size);
-            if (!new_buf) { free(buf); return NULL; }
-            buf = new_buf;
+        const char* stop_str = escaped_stop ? escaped_stop : req->stop;
+        size_t stop_param_len = strlen(stop_str) + 48;
+        char* stop_buf = (char*)malloc(stop_param_len);
+        if (stop_buf) {
+            snprintf(stop_buf, stop_param_len, ",\"stop_sequences\":[\"%s\"]", stop_str);
+            size_t stop_len = strlen(stop_buf);
+            while (offset + (int)stop_len >= (int)buf_size - 1) {
+                buf_size *= 2;
+                char* new_buf = (char*)realloc(buf, buf_size);
+                if (!new_buf) { free(stop_buf); free(escaped_stop); free(buf); return NULL; }
+                buf = new_buf;
+            }
+            strcpy(buf + offset, stop_buf);
+            offset += stop_len;
+            free(stop_buf);
         }
-        strcpy(buf + offset, stop_buf);
-        offset += stop_len;
+        free(escaped_stop);
     }
 
     /* Add stream flag */
@@ -425,16 +436,13 @@ static OpenAI_ChatResponse* parse_anthropic_response(OpenAI_JSONNode* json) {
 
     if (content_arr && content_arr->child_count > 0) {
         /* First pass: calculate total length */
-        for (size_t i = 0; i < (size_t)content_arr->child_count; i++) {
-            OpenAI_JSONNode* block = openai_json_get_array_item(content_arr, i);
-            if (block) {
-                const char* type = openai_json_get_string(block, "type");
-                if (type && strcmp(type, "text") == 0) {
-                    const char* text = openai_json_get_string(block, "text");
-                    if (text) {
-                        total_content_len += strlen(text);
-                        text_block_count++;
-                    }
+        for (OpenAI_JSONNode* block = openai_json_array_first(content_arr); block; block = openai_json_array_next(block)) {
+            const char* type = openai_json_get_string(block, "type");
+            if (type && strcmp(type, "text") == 0) {
+                const char* text = openai_json_get_string(block, "text");
+                if (text) {
+                    total_content_len += strlen(text);
+                    text_block_count++;
                 }
             }
         }
@@ -452,17 +460,14 @@ static OpenAI_ChatResponse* parse_anthropic_response(OpenAI_JSONNode* json) {
             if (resp->choices[0].content) {
                 resp->choices[0].content[0] = '\0';
                 size_t pos = 0;
-                for (size_t i = 0; i < (size_t)content_arr->child_count; i++) {
-                    OpenAI_JSONNode* block = openai_json_get_array_item(content_arr, i);
-                    if (block) {
-                        const char* type = openai_json_get_string(block, "type");
-                        if (type && strcmp(type, "text") == 0) {
-                            const char* text = openai_json_get_string(block, "text");
-                            if (text) {
-                                size_t len = strlen(text);
-                                memcpy(resp->choices[0].content + pos, text, len);
-                                pos += len;
-                            }
+                for (OpenAI_JSONNode* block = openai_json_array_first(content_arr); block; block = openai_json_array_next(block)) {
+                    const char* type = openai_json_get_string(block, "type");
+                    if (type && strcmp(type, "text") == 0) {
+                        const char* text = openai_json_get_string(block, "text");
+                        if (text) {
+                            size_t len = strlen(text);
+                            memcpy(resp->choices[0].content + pos, text, len);
+                            pos += len;
                         }
                     }
                 }
@@ -595,24 +600,22 @@ OpenAI_ChatResponse* openai_chat_create(OpenAI_Client* client, OpenAI_ChatReques
         } else {
         memset(resp->choices, 0, sizeof(OpenAI_Choice) * resp->choice_count);
 
-        for (size_t i = 0; i < resp->choice_count; i++) {
-            OpenAI_JSONNode* choice = openai_json_get_array_item(choices, i);
-            if (choice) {
-                OpenAI_JSONNode* msg = openai_json_get_object(choice, "message");
-                if (msg) {
-                    const char* content = openai_json_get_string(msg, "content");
-                    if (content) {
-                        resp->choices[i].content = (char*)malloc(strlen(content) + 1);
-                        if (resp->choices[i].content) strcpy(resp->choices[i].content, content);
-                    }
-                    const char* role = openai_json_get_string(msg, "role");
-                    if (role) {
-                        resp->choices[i].role = (char*)malloc(strlen(role) + 1);
-                        if (resp->choices[i].role) strcpy(resp->choices[i].role, role);
-                    }
+        size_t ci = 0;
+        for (OpenAI_JSONNode* choice = openai_json_array_first(choices); choice && ci < resp->choice_count; choice = openai_json_array_next(choice), ci++) {
+            OpenAI_JSONNode* msg = openai_json_get_object(choice, "message");
+            if (msg) {
+                const char* content = openai_json_get_string(msg, "content");
+                if (content) {
+                    resp->choices[ci].content = (char*)malloc(strlen(content) + 1);
+                    if (resp->choices[ci].content) strcpy(resp->choices[ci].content, content);
                 }
-                resp->choices[i].index = (int)openai_json_get_number(choice, "index");
+                const char* role = openai_json_get_string(msg, "role");
+                if (role) {
+                    resp->choices[ci].role = (char*)malloc(strlen(role) + 1);
+                    if (resp->choices[ci].role) strcpy(resp->choices[ci].role, role);
+                }
             }
+            resp->choices[ci].index = (int)openai_json_get_number(choice, "index");
         }
         }
     }
@@ -707,10 +710,14 @@ static int parse_sse_line(const char* line, size_t len, char* output, size_t out
 
         while (*p && *p != '"' && content_len < output_size - 1) {
             if (*p == '\\') {
-                /* Skip escaped character */
                 p++;
                 if (*p == '\0') break;
-                output[content_len++] = *p;
+                if (*p == 'n') { output[content_len++] = '\n'; }
+                else if (*p == 't') { output[content_len++] = '\t'; }
+                else if (*p == 'r') { output[content_len++] = '\r'; }
+                else if (*p == '\\') { output[content_len++] = '\\'; }
+                else if (*p == '"') { output[content_len++] = '"'; }
+                else { output[content_len++] = *p; }
                 p++;
             } else {
                 output[content_len++] = *p;
@@ -870,7 +877,7 @@ int openai_stream_read(void* stream, OpenAI_StreamEvent* event) {
 
     memset(event, 0, sizeof(OpenAI_StreamEvent));
 
-    char line_buffer[1024];
+    char line_buffer[4096];
 
     while (handle->parse_pos < handle->buffer_size) {
         size_t line_start = find_line_start(handle->buffer, handle->buffer_size, handle->parse_pos);
@@ -893,15 +900,52 @@ int openai_stream_read(void* stream, OpenAI_StreamEvent* event) {
                     memcpy(handle->current_event, line_buffer + 7, ev_len);
                     handle->current_event[ev_len] = '\0';
                 } else if (line_len > 6 && strncmp(line_buffer, "data: ", 6) == 0) {
+                    const char* data_str = line_buffer + 6;
+                    size_t data_len = line_len - 6;
                     /* Check for message_stop */
                     if (strcmp(handle->current_event, "message_stop") == 0) {
                         handle->eof = 1;
                         return OPENAI_ERR_EOF;
                     }
+                    /* Parse content_block_start for role and index */
+                    if (strcmp(handle->current_event, "content_block_start") == 0) {
+                        const char* role_start = strstr(data_str, "\"role\":\"");
+                        if (role_start) {
+                            role_start += 8;
+                            const char* role_end = strchr(role_start, '"');
+                            if (role_end && (size_t)(role_end - role_start) < 64) {
+                                event->role = (char*)malloc(role_end - role_start + 1);
+                                if (event->role) {
+                                    memcpy(event->role, role_start, role_end - role_start);
+                                    event->role[role_end - role_start] = '\0';
+                                }
+                            }
+                        }
+                        const char* index_start = strstr(data_str, "\"index\":");
+                        if (index_start) {
+                            event->index = atoi(index_start + 8);
+                        }
+                    }
+                    /* Parse message_delta for stop_reason */
+                    if (strcmp(handle->current_event, "message_delta") == 0) {
+                        const char* stop_start = strstr(data_str, "\"stop_reason\":\"");
+                        if (stop_start) {
+                            stop_start += 15;
+                            const char* stop_end = strchr(stop_start, '"');
+                            if (stop_end) {
+                                size_t stop_len = stop_end - stop_start;
+                                event->stop_reason = (char*)malloc(stop_len + 1);
+                                if (event->stop_reason) {
+                                    memcpy(event->stop_reason, stop_start, stop_len);
+                                    event->stop_reason[stop_len] = '\0';
+                                }
+                            }
+                        }
+                    }
                     /* Parse content_block_delta */
                     if (strcmp(handle->current_event, "content_block_delta") == 0) {
-                        char content[512] = {0};
-                        int ret = parse_anthropic_sse_line(line_buffer + 6, line_len - 6,
+                        char content[2048] = {0};
+                        int ret = parse_anthropic_sse_line(data_str, data_len,
                                                            content, sizeof(content));
                         if (ret == 0 && content[0] != '\0') {
                             event->content = (char*)malloc(strlen(content) + 1);
@@ -919,7 +963,7 @@ int openai_stream_read(void* stream, OpenAI_StreamEvent* event) {
                 /* Skip empty lines and non-data lines for Anthropic */
             } else {
                 /* OpenAI SSE parsing */
-                char content[512] = {0};
+                char content[2048] = {0};
                 int ret = parse_sse_line(line_buffer, line_len, content, sizeof(content));
 
             if (ret == 1) {
@@ -982,8 +1026,10 @@ void openai_stream_event_free(OpenAI_StreamEvent* event) {
     if (event) {
         if (event->content) free(event->content);
         if (event->role) free(event->role);
+        if (event->stop_reason) free(event->stop_reason);
         event->content = NULL;
         event->role = NULL;
+        event->stop_reason = NULL;
         /* event_type is static string, no need to free */
     }
 }
@@ -1070,18 +1116,16 @@ OpenAI_EmbeddingResponse* openai_embeddings_create(OpenAI_Client* client, OpenAI
     /* Extract embedding from data[0].embedding */
     OpenAI_JSONNode* data = openai_json_get_object(json, "data");
     if (data && data->child_count > 0) {
-        OpenAI_JSONNode* item = openai_json_get_array_item(data, 0);
+        OpenAI_JSONNode* item = openai_json_array_first(data);
         if (item) {
             OpenAI_JSONNode* embedding = openai_json_get_object(item, "embedding");
             if (embedding && embedding->child_count > 0) {
                 resp->embedding_dim = embedding->child_count;
                 resp->embedding = (float*)malloc(sizeof(float) * resp->embedding_dim);
                 if (resp->embedding) {
-                    for (size_t i = 0; i < resp->embedding_dim; i++) {
-                        OpenAI_JSONNode* val = openai_json_get_array_item(embedding, i);
-                        if (val) {
-                            resp->embedding[i] = (float)val->number_value;
-                        }
+                    size_t ei = 0;
+                    for (OpenAI_JSONNode* val = openai_json_array_first(embedding); val && ei < resp->embedding_dim; val = openai_json_array_next(val), ei++) {
+                        resp->embedding[ei] = (float)val->number_value;
                     }
                 }
             }

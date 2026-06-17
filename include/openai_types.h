@@ -14,7 +14,7 @@
 typedef struct {
     char* role;      /**< Message role (system/user/assistant) */
     char* content;    /**< Message content */
-    char* name;      /**< Optional speaker name */
+    char* name;      /**< Optional speaker name (reserved for future use, not currently sent in requests) */
 } OpenAI_Message;
 
 /**
@@ -82,6 +82,7 @@ typedef struct {
     char* content;            /**< Delta content (caller must free) */
     char* role;               /**< Optional role (caller must free) */
     int index;                /**< Choice index */
+    char* stop_reason;        /**< Stop reason for Anthropic (caller must free) */
 } OpenAI_StreamEvent;
 
 /**

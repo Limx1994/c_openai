@@ -23,7 +23,14 @@
 /* ============================================================
  * altcp_read compatibility layer (removed in lwIP 2.2.x)
  * Uses altcp_recv callback + ring buffer for blocking reads
+ * Only needed when ALTCP TLS is enabled.
  * ============================================================ */
+#ifdef LWIP_ALTCP_TLS
+
+#include "openai_config.h"
+#include <lwip/sys.h>
+#include <lwip/timeouts.h>
+
 #define ALTCP_RX_BUF_SIZE 8192
 
 typedef struct {
@@ -80,12 +87,13 @@ static int altcp_read(struct altcp_pcb *pcb, void *buf, size_t len) {
     uint32_t h = s_rx_ring.head;
 
     /* Wait for data or EOF */
-    uint32_t timeout_ms = 30000; /* 30s timeout */
-    uint32_t waited = 0;
+    uint32_t timeout_ms = OPENAI_TIMEOUT * 1000;
+    uint32_t start = sys_now();
     while (t == h && s_rx_ring.data_ready != 2) {
-        if (waited >= timeout_ms) return 0; /* timeout */
-        /* In bare-metal: call sys_check_timeouts() here */
-        waited++;
+        if ((sys_now() - start) >= timeout_ms) return 0; /* timeout */
+#ifdef LWIP_ALTCP
+        sys_check_timeouts();
+#endif
     }
 
     if (s_rx_ring.data_ready == 2 && t == h) {
@@ -106,8 +114,9 @@ static int altcp_read(struct altcp_pcb *pcb, void *buf, size_t len) {
     return (int)to_read;
 }
 
+#endif /* LWIP_ALTCP_TLS */
+
 #include "openai_http.h"
-#include "openai_config.h"
 
 /* Case-insensitive substring search (portable, no libc dependency) */
 static char* openai_strcasestr(const char* haystack, const char* needle) {
@@ -124,7 +133,9 @@ static char* openai_strcasestr(const char* haystack, const char* needle) {
 }
 
 /* TLS config storage - module-level static for single-request-at-a-time use */
+#ifdef LWIP_ALTCP_TLS
 static struct altcp_tls_config* s_tls_config = NULL;
+#endif
 
 int openai_http_init(void) {
     return 0;
@@ -180,7 +191,6 @@ static int openai_http_parse_url(const char* url, char* host, size_t host_size,
 }
 
 static void* openai_http_connect(const char* host, int port, int is_https) {
-#ifdef OPENAI_USE_LWIP
 #ifdef LWIP_ALTCP_TLS
     if (is_https && OPENAI_USE_TLS) {
         /* Use ALTCP + mbedTLS for HTTPS */
@@ -233,12 +243,6 @@ static void* openai_http_connect(const char* host, int port, int is_https) {
     }
 
     return (void*)(intptr_t)sock;
-#else
-    (void)host;
-    (void)port;
-    (void)is_https;
-    return NULL;
-#endif
 }
 
 OpenAI_HTTPResponse* openai_http_request(OpenAI_HTTPRequest* req) {
@@ -394,8 +398,7 @@ OpenAI_HTTPResponse* openai_http_request(OpenAI_HTTPRequest* req) {
             char* header_end = strstr(buf, "\r\n\r\n");
             if (header_end) {
                 /* Parse Content-Length to read remaining body */
-                char* cl_str = strstr(buf, "Content-Length:");
-                if (!cl_str) cl_str = strstr(buf, "content-length:");
+                char* cl_str = openai_strcasestr(buf, "content-length:");
                 if (cl_str) {
                     cl_str += 15;
                     while (*cl_str == ' ') cl_str++;
@@ -469,9 +472,7 @@ OpenAI_HTTPResponse* openai_http_request(OpenAI_HTTPRequest* req) {
     size_t header_size = 512 + auth_len + extra_len;
     char* header = (char*)malloc(header_size);
     if (!header) {
-#ifdef OPENAI_USE_LWIP
         closesocket(sock);
-#endif
         return NULL;
     }
 
@@ -513,12 +514,10 @@ OpenAI_HTTPResponse* openai_http_request(OpenAI_HTTPRequest* req) {
     int total_sent = 0;
     while (total_sent < header_len) {
         int sent = send(sock, header + total_sent, header_len - total_sent, 0);
-        if (sent < 0) {
+        if (sent <= 0) {
             OPENAI_LOG_ERROR("lwIP: send header failed");
             free(header);
-#ifdef OPENAI_USE_LWIP
             closesocket(sock);
-#endif
             return NULL;
         }
         total_sent += sent;
@@ -529,12 +528,10 @@ OpenAI_HTTPResponse* openai_http_request(OpenAI_HTTPRequest* req) {
         total_sent = 0;
         while (total_sent < (int)req->body_size) {
             int sent = send(sock, req->body + total_sent, req->body_size - total_sent, 0);
-            if (sent < 0) {
+            if (sent <= 0) {
                 OPENAI_LOG_ERROR("lwIP: send body failed");
                 free(header);
-#ifdef OPENAI_USE_LWIP
                 closesocket(sock);
-#endif
                 return NULL;
             }
             total_sent += sent;
@@ -548,9 +545,7 @@ OpenAI_HTTPResponse* openai_http_request(OpenAI_HTTPRequest* req) {
     size_t buf_size = 0;
     char* buf = (char*)malloc(buf_capacity);
     if (!buf) {
-#ifdef OPENAI_USE_LWIP
         closesocket(sock);
-#endif
         return NULL;
     }
 
@@ -561,9 +556,7 @@ OpenAI_HTTPResponse* openai_http_request(OpenAI_HTTPRequest* req) {
             char* new_buf = (char*)realloc(buf, buf_capacity);
             if (!new_buf) {
                 free(buf);
-#ifdef OPENAI_USE_LWIP
                 closesocket(sock);
-#endif
                 return NULL;
             }
             buf = new_buf;
@@ -610,9 +603,7 @@ OpenAI_HTTPResponse* openai_http_request(OpenAI_HTTPRequest* req) {
         }
     }
 
-#ifdef OPENAI_USE_LWIP
     closesocket(sock);
-#endif
 
     OpenAI_HTTPResponse* resp = (OpenAI_HTTPResponse*)calloc(1, sizeof(OpenAI_HTTPResponse));
     if (!resp) {
@@ -805,8 +796,7 @@ OpenAI_HTTPResponse* openai_http_request_stream(OpenAI_HTTPRequest* req) {
             char* header_end = strstr(buf, "\r\n\r\n");
             if (header_end) {
                 /* Parse Content-Length to read remaining body */
-                char* cl_str = strstr(buf, "Content-Length:");
-                if (!cl_str) cl_str = strstr(buf, "content-length:");
+                char* cl_str = openai_strcasestr(buf, "content-length:");
                 if (cl_str) {
                     cl_str += 15;
                     while (*cl_str == ' ') cl_str++;
@@ -880,9 +870,7 @@ OpenAI_HTTPResponse* openai_http_request_stream(OpenAI_HTTPRequest* req) {
     size_t header_size = 512 + auth_len + extra_len;
     char* header = (char*)malloc(header_size);
     if (!header) {
-#ifdef OPENAI_USE_LWIP
         closesocket(sock);
-#endif
         return NULL;
     }
 
@@ -924,12 +912,10 @@ OpenAI_HTTPResponse* openai_http_request_stream(OpenAI_HTTPRequest* req) {
     int total_sent = 0;
     while (total_sent < header_len) {
         int sent = send(sock, header + total_sent, header_len - total_sent, 0);
-        if (sent < 0) {
+        if (sent <= 0) {
             OPENAI_LOG_ERROR("lwIP: send header failed");
             free(header);
-#ifdef OPENAI_USE_LWIP
             closesocket(sock);
-#endif
             return NULL;
         }
         total_sent += sent;
@@ -940,12 +926,10 @@ OpenAI_HTTPResponse* openai_http_request_stream(OpenAI_HTTPRequest* req) {
         total_sent = 0;
         while (total_sent < (int)req->body_size) {
             int sent = send(sock, req->body + total_sent, req->body_size - total_sent, 0);
-            if (sent < 0) {
+            if (sent <= 0) {
                 OPENAI_LOG_ERROR("lwIP: send body failed");
                 free(header);
-#ifdef OPENAI_USE_LWIP
                 closesocket(sock);
-#endif
                 return NULL;
             }
             total_sent += sent;
@@ -959,9 +943,7 @@ OpenAI_HTTPResponse* openai_http_request_stream(OpenAI_HTTPRequest* req) {
     size_t buf_size = 0;
     char* buf = (char*)malloc(buf_capacity);
     if (!buf) {
-#ifdef OPENAI_USE_LWIP
         closesocket(sock);
-#endif
         return NULL;
     }
 
@@ -972,9 +954,7 @@ OpenAI_HTTPResponse* openai_http_request_stream(OpenAI_HTTPRequest* req) {
             char* new_buf = (char*)realloc(buf, buf_capacity);
             if (!new_buf) {
                 free(buf);
-#ifdef OPENAI_USE_LWIP
                 closesocket(sock);
-#endif
                 return NULL;
             }
             buf = new_buf;
@@ -1021,9 +1001,7 @@ OpenAI_HTTPResponse* openai_http_request_stream(OpenAI_HTTPRequest* req) {
         }
     }
 
-#ifdef OPENAI_USE_LWIP
     closesocket(sock);
-#endif
 
     OpenAI_HTTPResponse* resp = (OpenAI_HTTPResponse*)calloc(1, sizeof(OpenAI_HTTPResponse));
     if (!resp) {
