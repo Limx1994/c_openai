@@ -265,7 +265,9 @@ openai_client_set_base_url(client, "https://your-proxy.com/v1");
 | `openai_json_get_string(parent, key)` | Get string value from object |
 | `openai_json_get_number(parent, key)` | Get number value from object |
 | `openai_json_get_object(parent, key)` | Get child object by key |
-| `openai_json_get_array_item(parent, index)` | Get array item by index |
+| `openai_json_get_array_item(parent, index)` | Get array item by index (O(n), prefer iterators) |
+| `openai_json_array_first(parent)` | Get first array item (for iterator pattern) |
+| `openai_json_array_next(current)` | Get next array item (for iterator pattern) |
 
 ## Error Handling
 
