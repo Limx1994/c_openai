@@ -199,8 +199,7 @@ OpenAI_JSONNode* openai_json_parse(const char* json_string) {
     if (!json_string) return NULL;
 
     /* Skip leading whitespace */
-    const char* p = json_string;
-    while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
+    const char* p = openai_json_skip_space(json_string);
 
     /* Valid JSON must start with { or [ */
     if (*p != '{' && *p != '[') return NULL;
@@ -261,19 +260,6 @@ OpenAI_JSONNode* openai_json_get_object(OpenAI_JSONNode* parent, const char* key
             return child;
         }
         child = (OpenAI_JSONNode*)child->next;
-    }
-    return NULL;
-}
-
-OpenAI_JSONNode* openai_json_get_array_item(OpenAI_JSONNode* parent, size_t index) {
-    if (!parent || !parent->is_array) return NULL;
-
-    OpenAI_JSONNode* child = (OpenAI_JSONNode*)parent->children;
-    size_t i = 0;
-    while (child) {
-        if (i == index) return child;
-        child = (OpenAI_JSONNode*)child->next;
-        i++;
     }
     return NULL;
 }

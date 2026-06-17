@@ -59,11 +59,13 @@ static err_t altcp_recv_cb(void *arg, struct altcp_pcb *pcb,
         uint32_t t = s_rx_ring.tail;
         uint32_t free_space = (t + ALTCP_RX_BUF_SIZE - h - 1) % ALTCP_RX_BUF_SIZE;
         uint32_t to_copy = q->len < free_space ? q->len : free_space;
-        for (uint32_t i = 0; i < to_copy; i++) {
-            s_rx_ring.buf[h] = ((uint8_t *)q->payload)[i];
-            h = (h + 1) % ALTCP_RX_BUF_SIZE;
+        uint32_t chunk1 = ALTCP_RX_BUF_SIZE - h;
+        if (chunk1 > to_copy) chunk1 = to_copy;
+        memcpy(s_rx_ring.buf + h, q->payload, chunk1);
+        if (chunk1 < to_copy) {
+            memcpy(s_rx_ring.buf, (uint8_t *)q->payload + chunk1, to_copy - chunk1);
         }
-        s_rx_ring.head = h;
+        s_rx_ring.head = (h + to_copy) % ALTCP_RX_BUF_SIZE;
     }
     s_rx_ring.data_ready = 1;
     altcp_recved(pcb, p->tot_len);
@@ -91,9 +93,7 @@ static int altcp_read(struct altcp_pcb *pcb, void *buf, size_t len) {
     uint32_t start = sys_now();
     while (t == h && s_rx_ring.data_ready != 2) {
         if ((sys_now() - start) >= timeout_ms) return 0; /* timeout */
-#ifdef LWIP_ALTCP
         sys_check_timeouts();
-#endif
     }
 
     if (s_rx_ring.data_ready == 2 && t == h) {
@@ -118,14 +118,17 @@ static int altcp_read(struct altcp_pcb *pcb, void *buf, size_t len) {
 
 #include "openai_http.h"
 
-/* Case-insensitive substring search (portable, no libc dependency) */
+/* Case-insensitive substring search (ASCII-only, no locale dependency) */
 static char* openai_strcasestr(const char* haystack, const char* needle) {
     if (!haystack || !needle || !*needle) return NULL;
     size_t needle_len = strlen(needle);
     for (; *haystack; haystack++) {
         size_t i;
         for (i = 0; i < needle_len && haystack[i]; i++) {
-            if (tolower((unsigned char)haystack[i]) != tolower((unsigned char)needle[i])) break;
+            char a = haystack[i], b = needle[i];
+            if (a >= 'A' && a <= 'Z') a += 32;
+            if (b >= 'A' && b <= 'Z') b += 32;
+            if (a != b) break;
         }
         if (i == needle_len) return (char*)haystack;
     }

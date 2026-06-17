@@ -63,6 +63,7 @@ make
 ```
 
 Or use the build script (MinGW/MSYS2):
+
 ```bash
 bash build.sh
 ```
@@ -70,10 +71,12 @@ bash build.sh
 ### lwIP Backend (for embedded/MCU)
 
 The lwIP backend supports both HTTP and HTTPS:
+
 - **HTTP**: Plain TCP socket, no TLS overhead
 - **HTTPS**: Uses ALTCP + mbedTLS for encrypted connections
 
 **Important**: lwIP and mbedTLS are included as git submodules. Clone with:
+
 ```bash
 git clone --recursive https://github.com/Limx1994/c_openai.git
 # Or if already cloned:
@@ -81,6 +84,7 @@ git submodule update --init --recursive
 ```
 
 For HTTPS with lwIP, ensure these are enabled in your `lwipopts.h`:
+
 ```c
 #define LWIP_ALTCP             1
 #define LWIP_ALTCP_TLS         1
@@ -88,6 +92,7 @@ For HTTPS with lwIP, ensure these are enabled in your `lwipopts.h`:
 ```
 
 Then configure in `openai_config.h`:
+
 ```c
 #define OPENAI_USE_TLS 1          // Enable TLS
 ```
@@ -95,11 +100,13 @@ Then configure in `openai_config.h`:
 ### Build with lwIP (for embedded/MCU)
 
 Using the build script (recommended, requires ARM GCC from STM32CubeIDE):
+
 ```bash
 bash build_lwip.sh
 ```
 
 Or with CMake:
+
 ```bash
 cmake .. -DOPENAI_HTTP_BACKEND=OPENAI_BACKEND_LWIP
 make
@@ -146,7 +153,7 @@ req.messages[0].content = "You are a helpful assistant.";
 req.messages[1].role = "user";
 req.messages[1].content = "Hello!";
 req.message_count = 2;
-req.temperature = 0.7f;
+req.temperature = 0.7f;  // 0.0-2.0, -1.0 for API default
 
 // Send request and get response
 OpenAI_ChatResponse* resp = openai_chat_create(client, &req);
@@ -180,7 +187,7 @@ req.messages[0].content = "You are a helpful assistant.";
 req.messages[1].role = "user";
 req.messages[1].content = "Hello!";
 req.message_count = 2;
-req.temperature = 0.7f;
+req.temperature = 0.7f;  // 0.0-2.0, -1.0 for API default
 req.max_tokens = 1024;  // Required for Anthropic
 
 OpenAI_ChatResponse* resp = openai_chat_create(client, &req);
@@ -225,53 +232,54 @@ openai_client_set_base_url(client, "https://your-proxy.com/v1");
 
 ### Client Lifecycle
 
-| Function | Description |
-|----------|-------------|
-| `openai_client_new(api_key)` | Create new client |
-| `openai_client_free(client)` | Free client and resources |
-| `openai_client_set_base_url(client, url)` | Set custom API base URL (e.g., for Azure, proxies) |
+| Function                                       | Description                                                            |
+| ---------------------------------------------- | ---------------------------------------------------------------------- |
+| `openai_client_new(api_key)`                   | Create new client                                                      |
+| `openai_client_free(client)`                   | Free client and resources                                              |
+| `openai_client_set_base_url(client, url)`      | Set custom API base URL (e.g., for Azure, proxies)                     |
 | `openai_client_set_provider(client, provider)` | Set API provider (OPENAI_PROVIDER_OPENAI or OPENAI_PROVIDER_ANTHROPIC) |
+| `openai_client_get_last_error(client)`         | Get last error code (use after NULL return to determine error type)    |
 
 ### Chat Completions
 
-| Function | Description |
-|----------|-------------|
+| Function                          | Description                         |
+| --------------------------------- | ----------------------------------- |
 | `openai_chat_create(client, req)` | Send chat request, returns response |
-| `openai_chat_response_free(resp)` | Free response |
+| `openai_chat_response_free(resp)` | Free response                       |
 
 ### Embeddings
 
-| Function | Description |
-|----------|-------------|
+| Function                                | Description             |
+| --------------------------------------- | ----------------------- |
 | `openai_embeddings_create(client, req)` | Get embeddings for text |
-| `openai_embedding_response_free(resp)` | Free response |
+| `openai_embedding_response_free(resp)`  | Free response           |
 
 ### Streaming
 
-| Function | Description |
-|----------|-------------|
-| `openai_chat_create_stream(client, req)` | Create streaming chat request |
-| `openai_stream_read(stream, event)` | Read next event from stream |
-| `openai_stream_event_free(event)` | Free event content/role/stop_reason fields |
-| `openai_stream_close(stream)` | Close stream and free resources |
+| Function                                 | Description                                |
+| ---------------------------------------- | ------------------------------------------ |
+| `openai_chat_create_stream(client, req)` | Create streaming chat request              |
+| `openai_stream_read(stream, event)`      | Read next event from stream                |
+| `openai_stream_event_free(event)`        | Free event content/role/stop_reason fields |
+| `openai_stream_close(stream)`            | Close stream and free resources            |
 
 ### JSON Utilities
 
-| Function | Description |
-|----------|-------------|
-| `openai_json_parse(json_string)` | Parse JSON string into DOM |
-| `openai_json_free(node)` | Free JSON DOM |
-| `openai_json_escape_string(str)` | Escape string for JSON (prevents injection) |
-| `openai_json_get_string(parent, key)` | Get string value from object |
-| `openai_json_get_number(parent, key)` | Get number value from object |
-| `openai_json_get_object(parent, key)` | Get child object by key |
-| `openai_json_get_array_item(parent, index)` | Get array item by index (O(n), prefer iterators) |
-| `openai_json_array_first(parent)` | Get first array item (for iterator pattern) |
-| `openai_json_array_next(current)` | Get next array item (for iterator pattern) |
+| Function                              | Description                                 |
+| ------------------------------------- | ------------------------------------------- |
+| `openai_json_parse(json_string)`      | Parse JSON string into DOM                  |
+| `openai_json_free(node)`              | Free JSON DOM                               |
+| `openai_json_escape_string(str)`      | Escape string for JSON (prevents injection) |
+| `openai_json_get_string(parent, key)` | Get string value from object                |
+| `openai_json_get_number(parent, key)` | Get number value from object                |
+| `openai_json_get_object(parent, key)` | Get child object by key                     |
+| `openai_json_array_first(parent)`     | Get first array item (for iterator pattern) |
+| `openai_json_array_next(current)`     | Get next array item (for iterator pattern)  |
 
 ## Error Handling
 
 Error codes:
+
 - `OPENAI_OK` - Success
 - `OPENAI_ERR_INVALID_PARAM` - Invalid parameter
 - `OPENAI_ERR_MEMORY` - Memory allocation failed
@@ -279,11 +287,38 @@ Error codes:
 - `OPENAI_ERR_TIMEOUT` - Request timeout
 - `OPENAI_ERR_PARSE` - JSON parse error
 - `OPENAI_ERR_API` - API returned error
-- `OPENAI_ERR_AUTH` - Authentication failed
-- `OPENAI_ERR_RATE_LIMIT` - Rate limit exceeded
-- `OPENAI_ERR_SERVER` - Server error
+- `OPENAI_ERR_AUTH` - Authentication failed (HTTP 401)
+- `OPENAI_ERR_RATE_LIMIT` - Rate limit exceeded (HTTP 429)
+- `OPENAI_ERR_SERVER` - Server error (HTTP 5xx)
 - `OPENAI_ERR_BUFFER_EMPTY` - Buffer empty (streaming)
 - `OPENAI_ERR_EOF` - End of stream (streaming)
+
+### Error Query
+
+When `openai_chat_create`, `openai_chat_create_stream`, or `openai_embeddings_create` returns NULL, use `openai_client_get_last_error()` to get the specific error type:
+
+```c
+OpenAI_ChatResponse* resp = openai_chat_create(client, &req);
+if (!resp) {
+    int err = openai_client_get_last_error(client);
+    switch (err) {
+        case OPENAI_ERR_AUTH:
+            printf("Authentication failed, check API key\n");
+            break;
+        case OPENAI_ERR_RATE_LIMIT:
+            printf("Rate limit exceeded, retry later\n");
+            break;
+        case OPENAI_ERR_SERVER:
+            printf("Server error, retry later\n");
+            break;
+        case OPENAI_ERR_NETWORK:
+            printf("Network error, check connection\n");
+            break;
+        default:
+            printf("Unknown error: %d\n", err);
+    }
+}
+```
 
 ## Security Features
 
@@ -304,6 +339,7 @@ This library includes several security enhancements:
 ### Linux/Raspberry Pi
 
 All dependencies are included as git submodules. Clone with:
+
 ```bash
 git clone --recursive https://github.com/Limx1994/c_openai.git
 # Or if already cloned:
@@ -326,6 +362,7 @@ make
 2. Configure `OPENAI_HTTP_BACKEND=OPENAI_BACKEND_LWIP`
 3. Ensure `OPENAI_USE_MALLOC=0` for no-malloc mode
 4. For HTTPS support, enable ALTCP + mbedTLS in `lwipopts.h`:
+   
    ```c
    #define LWIP_ALTCP             1
    #define LWIP_ALTCP_TLS         1
@@ -334,4 +371,23 @@ make
 
 ## License
 
-MIT License
+CC BY-NC 4.0 (Creative Commons Attribution-NonCommercial 4.0 International)
+
+This project is licensed under the Creative Commons Attribution-NonCommercial
+4.0 International License. You may use, modify, and share this software for
+**non-commercial purposes only**.
+
+**Allowed**:
+- ✅ Copy and redistribute the material
+- ✅ Remix, transform, and build upon the material
+
+**Required**:
+- 📋 Attribution: You must give appropriate credit
+
+**Prohibited**:
+- ❌ Commercial use of any kind
+
+For commercial use, please contact the author for a separate license.
+
+See [LICENSE](LICENSE) for full details or visit:
+https://creativecommons.org/licenses/by-nc/4.0/

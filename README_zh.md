@@ -146,7 +146,7 @@ req.messages[0].content = "你是一个有帮助的助手。";
 req.messages[1].role = "user";
 req.messages[1].content = "你好！";
 req.message_count = 2;
-req.temperature = 0.7f;
+req.temperature = 0.7f;  // 0.0-2.0，-1.0 表示使用 API 默认值
 
 // 发送请求并获取响应
 OpenAI_ChatResponse* resp = openai_chat_create(client, &req);
@@ -180,7 +180,7 @@ req.messages[0].content = "你是一个有帮助的助手。";
 req.messages[1].role = "user";
 req.messages[1].content = "你好！";
 req.message_count = 2;
-req.temperature = 0.7f;
+req.temperature = 0.7f;  // 0.0-2.0，-1.0 表示使用 API 默认值
 req.max_tokens = 1024;  // Anthropic 必填
 
 OpenAI_ChatResponse* resp = openai_chat_create(client, &req);
@@ -231,6 +231,7 @@ openai_client_set_base_url(client, "https://your-proxy.com/v1");
 | `openai_client_free(client)` | 释放客户端和资源 |
 | `openai_client_set_base_url(client, url)` | 设置自定义 API 基础 URL（用于 Azure、代理服务器等） |
 | `openai_client_set_provider(client, provider)` | 设置 API 提供商（OPENAI_PROVIDER_OPENAI 或 OPENAI_PROVIDER_ANTHROPIC） |
+| `openai_client_get_last_error(client)` | 获取最后一次错误代码（用于区分 NULL 返回的具体原因） |
 
 ### 聊天补全
 
@@ -265,7 +266,6 @@ openai_client_set_base_url(client, "https://your-proxy.com/v1");
 | `openai_json_get_string(parent, key)` | 从对象获取字符串值 |
 | `openai_json_get_number(parent, key)` | 从对象获取数字值 |
 | `openai_json_get_object(parent, key)` | 按键获取子对象 |
-| `openai_json_get_array_item(parent, index)` | 按索引获取数组项（O(n)，推荐使用迭代器） |
 | `openai_json_array_first(parent)` | 获取数组首元素（迭代器模式） |
 | `openai_json_array_next(current)` | 获取数组下一元素（迭代器模式） |
 
@@ -279,11 +279,38 @@ openai_client_set_base_url(client, "https://your-proxy.com/v1");
 - `OPENAI_ERR_TIMEOUT` - 请求超时
 - `OPENAI_ERR_PARSE` - JSON 解析错误
 - `OPENAI_ERR_API` - API 返回错误
-- `OPENAI_ERR_AUTH` - 认证失败
-- `OPENAI_ERR_RATE_LIMIT` - 超出速率限制
-- `OPENAI_ERR_SERVER` - 服务器错误
+- `OPENAI_ERR_AUTH` - 认证失败（HTTP 401）
+- `OPENAI_ERR_RATE_LIMIT` - 超出速率限制（HTTP 429）
+- `OPENAI_ERR_SERVER` - 服务器错误（HTTP 5xx）
 - `OPENAI_ERR_BUFFER_EMPTY` - 缓冲区为空（流式响应）
 - `OPENAI_ERR_EOF` - 流结束（流式响应）
+
+### 错误查询
+
+当 `openai_chat_create`、`openai_chat_create_stream` 或 `openai_embeddings_create` 返回 NULL 时，可通过 `openai_client_get_last_error()` 获取具体错误类型：
+
+```c
+OpenAI_ChatResponse* resp = openai_chat_create(client, &req);
+if (!resp) {
+    int err = openai_client_get_last_error(client);
+    switch (err) {
+        case OPENAI_ERR_AUTH:
+            printf("认证失败，请检查 API Key\n");
+            break;
+        case OPENAI_ERR_RATE_LIMIT:
+            printf("超出速率限制，请稍后重试\n");
+            break;
+        case OPENAI_ERR_SERVER:
+            printf("服务器错误，请稍后重试\n");
+            break;
+        case OPENAI_ERR_NETWORK:
+            printf("网络错误，请检查连接\n");
+            break;
+        default:
+            printf("未知错误：%d\n", err);
+    }
+}
+```
 
 ## 安全特性
 
@@ -334,4 +361,22 @@ make
 
 ## 许可证
 
-MIT License
+CC BY-NC 4.0（Creative Commons 署名-非商业性使用 4.0 国际许可证）
+
+本项目采用 Creative Commons 署名-非商业性使用 4.0 国际许可证授权。
+您可以将本软件用于**非商业目的**。
+
+**允许**：
+- ✅ 复制和分享本作品
+- ✅ 修改和演绎本作品
+
+**要求**：
+- 📋 署名：必须注明原作者
+
+**禁止**：
+- ❌ 任何形式的商业使用
+
+如需商业使用，请联系作者获取单独授权。
+
+完整许可证内容请参阅 [LICENSE](LICENSE) 文件或访问：
+https://creativecommons.org/licenses/by-nc/4.0/deed.zh-hans
