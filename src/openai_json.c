@@ -278,6 +278,16 @@ OpenAI_JSONNode* openai_json_get_array_item(OpenAI_JSONNode* parent, size_t inde
     return NULL;
 }
 
+OpenAI_JSONNode* openai_json_array_first(OpenAI_JSONNode* parent) {
+    if (!parent || !parent->is_array) return NULL;
+    return (OpenAI_JSONNode*)parent->children;
+}
+
+OpenAI_JSONNode* openai_json_array_next(OpenAI_JSONNode* current) {
+    if (!current) return NULL;
+    return (OpenAI_JSONNode*)current->next;
+}
+
 
 char* openai_json_escape_string(const char* str) {
     if (!str) return NULL;

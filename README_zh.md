@@ -90,7 +90,6 @@ git submodule update --init --recursive
 并在 `openai_config.h` 中配置：
 ```c
 #define OPENAI_USE_TLS 1          // 启用 TLS
-#define OPENAI_TLS_CERT_VERIFY 0  // 0=跳过证书验证（测试用）
 ```
 
 ### 使用 lwIP 构建（用于嵌入式/MCU）
@@ -108,17 +107,15 @@ make
 
 **注意**：ARM Cortex-M 平台需要在 `third_party/mbedtls/tf-psa-crypto/include/psa/crypto_config.h` 中禁用 `MBEDTLS_HAVE_ASM`（寄存器不足）。
 
-### 使用静态内存构建（无 malloc，用于裸机）
+### 构建选项
 
 ```bash
-cmake .. -DOPENAI_USE_MALLOC=0
+# libcurl 后端（默认）
+cmake ..
 make
-```
 
-### 组合选项（例如 lwIP + 静态内存）
-
-```bash
-cmake .. -DOPENAI_HTTP_BACKEND=OPENAI_BACKEND_LWIP -DOPENAI_USE_MALLOC=0
+# lwIP 后端
+cmake .. -DOPENAI_HTTP_BACKEND=OPENAI_BACKEND_LWIP
 make
 ```
 
@@ -128,12 +125,8 @@ make
 
 ```c
 #define OPENAI_HTTP_BACKEND OPENAI_BACKEND_CURL  // 或 OPENAI_BACKEND_LWIP
-#define OPENAI_USE_MALLOC 1    // 0 表示静态缓冲区模式
-#define OPENAI_BUFFER_SIZE 4096
-#define OPENAI_MAX_RETRIES 3
-#define OPENAI_TIMEOUT 30
-#define OPENAI_USE_TLS 1       // lwIP HTTPS（需要 mbedTLS）
-#define OPENAI_TLS_CERT_VERIFY 0
+#define OPENAI_TIMEOUT 30          // HTTP 超时秒数
+#define OPENAI_USE_TLS 1           // lwIP HTTPS（需要 mbedTLS）
 ```
 
 ## 使用方法
@@ -237,6 +230,7 @@ openai_client_set_base_url(client, "https://your-proxy.com/v1");
 | `openai_client_new(api_key)` | 创建新客户端 |
 | `openai_client_free(client)` | 释放客户端和资源 |
 | `openai_client_set_base_url(client, url)` | 设置自定义 API 基础 URL（用于 Azure、代理服务器等） |
+| `openai_client_set_provider(client, provider)` | 设置 API 提供商（OPENAI_PROVIDER_OPENAI 或 OPENAI_PROVIDER_ANTHROPIC） |
 
 ### 聊天补全
 
@@ -258,6 +252,7 @@ openai_client_set_base_url(client, "https://your-proxy.com/v1");
 |------|------|
 | `openai_chat_create_stream(client, req)` | 创建流式聊天请求 |
 | `openai_stream_read(stream, event)` | 从流中读取下一个事件 |
+| `openai_stream_event_free(event)` | 释放事件的 content/role/stop_reason 字段 |
 | `openai_stream_close(stream)` | 关闭流并释放资源 |
 
 ### JSON 工具

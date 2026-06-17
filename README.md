@@ -90,7 +90,6 @@ For HTTPS with lwIP, ensure these are enabled in your `lwipopts.h`:
 Then configure in `openai_config.h`:
 ```c
 #define OPENAI_USE_TLS 1          // Enable TLS
-#define OPENAI_TLS_CERT_VERIFY 0  // 0=skip cert verify for testing
 ```
 
 ### Build with lwIP (for embedded/MCU)
@@ -108,17 +107,15 @@ make
 
 **Note**: For ARM Cortex-M targets, `MBEDTLS_HAVE_ASM` must be disabled in `third_party/mbedtls/tf-psa-crypto/include/psa/crypto_config.h` due to register constraints.
 
-### Build with static memory (no malloc, for bare-metal)
+### Build options
 
 ```bash
-cmake .. -DOPENAI_USE_MALLOC=0
+# libcurl backend (default)
+cmake ..
 make
-```
 
-### Combined options (e.g., lwIP + static memory)
-
-```bash
-cmake .. -DOPENAI_HTTP_BACKEND=OPENAI_BACKEND_LWIP -DOPENAI_USE_MALLOC=0
+# lwIP backend
+cmake .. -DOPENAI_HTTP_BACKEND=OPENAI_BACKEND_LWIP
 make
 ```
 
@@ -128,12 +125,8 @@ Edit `include/openai_config.h` to customize:
 
 ```c
 #define OPENAI_HTTP_BACKEND OPENAI_BACKEND_CURL  // or OPENAI_BACKEND_LWIP
-#define OPENAI_USE_MALLOC 1    // 0 for static buffer mode
-#define OPENAI_BUFFER_SIZE 4096
-#define OPENAI_MAX_RETRIES 3
-#define OPENAI_TIMEOUT 30
-#define OPENAI_USE_TLS 1       // for lwIP HTTPS (requires mbedTLS)
-#define OPENAI_TLS_CERT_VERIFY 0
+#define OPENAI_TIMEOUT 30          // HTTP timeout in seconds
+#define OPENAI_USE_TLS 1           // for lwIP HTTPS (requires mbedTLS)
 ```
 
 ## Usage
@@ -237,6 +230,7 @@ openai_client_set_base_url(client, "https://your-proxy.com/v1");
 | `openai_client_new(api_key)` | Create new client |
 | `openai_client_free(client)` | Free client and resources |
 | `openai_client_set_base_url(client, url)` | Set custom API base URL (e.g., for Azure, proxies) |
+| `openai_client_set_provider(client, provider)` | Set API provider (OPENAI_PROVIDER_OPENAI or OPENAI_PROVIDER_ANTHROPIC) |
 
 ### Chat Completions
 
@@ -258,6 +252,7 @@ openai_client_set_base_url(client, "https://your-proxy.com/v1");
 |----------|-------------|
 | `openai_chat_create_stream(client, req)` | Create streaming chat request |
 | `openai_stream_read(stream, event)` | Read next event from stream |
+| `openai_stream_event_free(event)` | Free event content/role/stop_reason fields |
 | `openai_stream_close(stream)` | Close stream and free resources |
 
 ### JSON Utilities

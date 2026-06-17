@@ -11,20 +11,26 @@ static int curl_init_count = 0;
 struct memory_chunk {
     char* data;
     size_t size;
+    size_t capacity;
 };
 
 static size_t write_callback(void* contents, size_t size, size_t nmemb, void* userp) {
     size_t realsize = size * nmemb;
     struct memory_chunk* mem = (struct memory_chunk*)userp;
 
-    char* ptr = (char*)realloc(mem->data, mem->size + realsize + 1);
-    if (!ptr) {
-        OPENAI_LOG_ERROR("write_callback: realloc failed, size=%zu", mem->size + realsize + 1);
-        free(mem->data);
-        mem->data = NULL;
-        return 0;
+    if (mem->size + realsize + 1 > mem->capacity) {
+        size_t new_cap = mem->capacity == 0 ? 4096 : mem->capacity * 2;
+        while (new_cap < mem->size + realsize + 1) new_cap *= 2;
+        char* ptr = (char*)realloc(mem->data, new_cap);
+        if (!ptr) {
+            OPENAI_LOG_ERROR("write_callback: realloc failed, size=%zu", new_cap);
+            free(mem->data);
+            mem->data = NULL;
+            return 0;
+        }
+        mem->data = ptr;
+        mem->capacity = new_cap;
     }
-    mem->data = ptr;
     memcpy(&(mem->data[mem->size]), contents, realsize);
     mem->size += realsize;
     mem->data[mem->size] = 0;
@@ -270,7 +276,9 @@ OpenAI_HTTPResponse* openai_http_request_stream(OpenAI_HTTPRequest* req) {
         curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
     }
 
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, OPENAI_TIMEOUT);
+    /* For streaming, only set connect timeout (not total transfer timeout).
+     * Long-running streams may exceed OPENAI_TIMEOUT. */
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, OPENAI_TIMEOUT);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
 
     CURLcode res = curl_easy_perform(curl);
