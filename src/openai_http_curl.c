@@ -173,35 +173,7 @@ OpenAI_HTTPResponse* openai_http_request(OpenAI_HTTPRequest* req) {
     return resp;
 }
 
-/* Stream handle for chunked responses */
-typedef struct {
-    char* data;
-    size_t size;
-    size_t capacity;
-} OpenAI_StreamBuffer;
 
-static size_t stream_write_callback(void* contents, size_t size, size_t nmemb, void* userp) {
-    size_t realsize = size * nmemb;
-    OpenAI_StreamBuffer* buf = (OpenAI_StreamBuffer*)userp;
-
-    if (buf->size + realsize + 1 > buf->capacity) {
-        size_t new_cap = buf->capacity == 0 ? 4096 : buf->capacity * 2;
-        while (new_cap < buf->size + realsize + 1) new_cap *= 2;
-        char* new_data = (char*)realloc(buf->data, new_cap);
-        if (!new_data) {
-            OPENAI_LOG_ERROR("stream_write_callback: realloc failed, size=%zu", new_cap);
-            return 0;
-        }
-        buf->data = new_data;
-        buf->capacity = new_cap;
-    }
-
-    memcpy(buf->data + buf->size, contents, realsize);
-    buf->size += realsize;
-    buf->data[buf->size] = '\0';
-
-    return realsize;
-}
 
 /* Streaming HTTP request - returns raw body for SSE parsing */
 OpenAI_HTTPResponse* openai_http_request_stream(OpenAI_HTTPRequest* req) {
@@ -220,7 +192,7 @@ OpenAI_HTTPResponse* openai_http_request_stream(OpenAI_HTTPRequest* req) {
         return NULL;
     }
 
-    OpenAI_StreamBuffer buf = {0};
+    struct memory_chunk buf = {0};
     buf.data = (char*)malloc(1);
     if (!buf.data) {
         OPENAI_LOG_ERROR("Failed to allocate stream buffer");
@@ -232,7 +204,7 @@ OpenAI_HTTPResponse* openai_http_request_stream(OpenAI_HTTPRequest* req) {
     buf.capacity = 1;
 
     curl_easy_setopt(curl, CURLOPT_URL, req->url);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, stream_write_callback);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &buf);
 
     if (req->method && strcmp(req->method, "POST") == 0) {

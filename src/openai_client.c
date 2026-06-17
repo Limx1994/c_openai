@@ -11,6 +11,7 @@ struct OpenAI_Client {
     char* api_key;
     char* base_url;
     int provider;  /* OpenAI_Provider value, default OPENAI_PROVIDER_OPENAI (0) */
+    int last_error; /* Last OpenAI_ErrorCode */
 };
 
 static int s_client_count = 0;
@@ -94,6 +95,11 @@ int openai_client_set_provider(OpenAI_Client* client, int provider) {
     return 0;
 }
 
+int openai_client_get_last_error(OpenAI_Client* client) {
+    if (!client) return OPENAI_ERR_INVALID_PARAM;
+    return client->last_error;
+}
+
 void openai_client_free(OpenAI_Client* client) {
     if (client) {
         if (client->api_key) free(client->api_key);
@@ -158,7 +164,7 @@ static char* build_chat_request_body(OpenAI_ChatRequest* req) {
     }
 
     /* Add optional parameters */
-    if (req->temperature >= 0) {
+    if (req->temperature >= 0.0f) {
         char temp_buf[64];
         snprintf(temp_buf, sizeof(temp_buf), ",\"temperature\":%g", req->temperature);
         size_t temp_len = strlen(temp_buf);
@@ -344,7 +350,7 @@ static char* build_anthropic_request_body(OpenAI_ChatRequest* req) {
     offset += snprintf(buf + offset, buf_size - offset, "]");
 
     /* Add temperature */
-    if (req->temperature >= 0) {
+    if (req->temperature >= 0.0f) {
         char temp_buf[64];
         snprintf(temp_buf, sizeof(temp_buf), ",\"temperature\":%g", req->temperature);
         size_t temp_len = strlen(temp_buf);
@@ -444,6 +450,13 @@ static OpenAI_ChatResponse* parse_anthropic_response(OpenAI_JSONNode* json) {
                     total_content_len += strlen(text);
                     text_block_count++;
                 }
+            } else if (type && strcmp(type, "tool_use") == 0) {
+                /* tool_use blocks: serialize as JSON string */
+                const char* id = openai_json_get_string(block, "id");
+                const char* name = openai_json_get_string(block, "name");
+                /* Estimate JSON size: {"id":"...","name":"...","input":...} */
+                total_content_len += (id ? strlen(id) : 0) + (name ? strlen(name) : 0) + 64;
+                text_block_count++;
             }
         }
     }
@@ -469,6 +482,13 @@ static OpenAI_ChatResponse* parse_anthropic_response(OpenAI_JSONNode* json) {
                             memcpy(resp->choices[0].content + pos, text, len);
                             pos += len;
                         }
+                    } else if (type && strcmp(type, "tool_use") == 0) {
+                        /* Serialize tool_use block as JSON string */
+                        const char* id = openai_json_get_string(block, "id");
+                        const char* name = openai_json_get_string(block, "name");
+                        int written = snprintf(resp->choices[0].content + pos, total_content_len + 1 - pos,
+                            "{\"id\":\"%s\",\"name\":\"%s\"}", id ? id : "", name ? name : "");
+                        if (written > 0) pos += written;
                     }
                 }
                 resp->choices[0].content[pos] = '\0';
@@ -516,6 +536,7 @@ OpenAI_ChatResponse* openai_chat_create(OpenAI_Client* client, OpenAI_ChatReques
     }
     if (!body) {
         OPENAI_LOG_ERROR("Failed to build request body");
+        client->last_error = OPENAI_ERR_MEMORY;
         return NULL;
     }
 
@@ -537,6 +558,7 @@ OpenAI_ChatResponse* openai_chat_create(OpenAI_Client* client, OpenAI_ChatReques
 
     if (!http_resp) {
         OPENAI_LOG_ERROR("HTTP request failed");
+        client->last_error = OPENAI_ERR_NETWORK;
         return NULL;
     }
 
@@ -544,6 +566,11 @@ OpenAI_ChatResponse* openai_chat_create(OpenAI_Client* client, OpenAI_ChatReques
         OPENAI_LOG_ERROR("API error: status_code=%ld, body=%.200s",
             (long)http_resp->status_code,
             http_resp->body ? http_resp->body : "(null)");
+        /* Map HTTP status to error code */
+        if (http_resp->status_code == 401) client->last_error = OPENAI_ERR_AUTH;
+        else if (http_resp->status_code == 429) client->last_error = OPENAI_ERR_RATE_LIMIT;
+        else if (http_resp->status_code >= 500) client->last_error = OPENAI_ERR_SERVER;
+        else client->last_error = OPENAI_ERR_API;
         openai_http_response_free(http_resp);
         return NULL;
     }
@@ -554,6 +581,7 @@ OpenAI_ChatResponse* openai_chat_create(OpenAI_Client* client, OpenAI_ChatReques
 
     if (!json) {
         OPENAI_LOG_ERROR("Failed to parse JSON response");
+        client->last_error = OPENAI_ERR_PARSE;
         return NULL;
     }
 
@@ -616,6 +644,13 @@ OpenAI_ChatResponse* openai_chat_create(OpenAI_Client* client, OpenAI_ChatReques
                 }
             }
             resp->choices[ci].index = (int)openai_json_get_number(choice, "index");
+
+            /* Extract finish_reason */
+            const char* finish_reason = openai_json_get_string(choice, "finish_reason");
+            if (finish_reason) {
+                resp->choices[ci].finish_reason = (char*)malloc(strlen(finish_reason) + 1);
+                if (resp->choices[ci].finish_reason) strcpy(resp->choices[ci].finish_reason, finish_reason);
+            }
         }
         }
     }
@@ -666,6 +701,7 @@ void openai_chat_response_free(OpenAI_ChatResponse* resp) {
             for (size_t i = 0; i < resp->choice_count; i++) {
                 if (resp->choices[i].content) free(resp->choices[i].content);
                 if (resp->choices[i].role) free(resp->choices[i].role);
+                if (resp->choices[i].finish_reason) free(resp->choices[i].finish_reason);
             }
             free(resp->choices);
         }
@@ -683,6 +719,8 @@ typedef struct {
     int eof;
     int provider;           /* OpenAI_Provider value */
     char current_event[64]; /* For Anthropic: tracks current event: line */
+    char* current_role;     /* For Anthropic: current block role */
+    int current_index;      /* For Anthropic: current block index */
 } OpenAI_StreamHandle;
 
 static int parse_sse_line(const char* line, size_t len, char* output, size_t output_size) {
@@ -813,6 +851,7 @@ void* openai_chat_create_stream(OpenAI_Client* client, OpenAI_ChatRequest* req) 
     }
     if (!body) {
         OPENAI_LOG_ERROR("Failed to build streaming request body");
+        client->last_error = OPENAI_ERR_MEMORY;
         return NULL;
     }
 
@@ -834,6 +873,7 @@ void* openai_chat_create_stream(OpenAI_Client* client, OpenAI_ChatRequest* req) 
 
     if (!http_resp) {
         OPENAI_LOG_ERROR("Streaming HTTP request failed");
+        client->last_error = OPENAI_ERR_NETWORK;
         return NULL;
     }
 
@@ -841,6 +881,10 @@ void* openai_chat_create_stream(OpenAI_Client* client, OpenAI_ChatRequest* req) 
         OPENAI_LOG_ERROR("Streaming API error: status_code=%ld, body=%.200s",
             (long)http_resp->status_code,
             http_resp->body ? http_resp->body : "(null)");
+        if (http_resp->status_code == 401) client->last_error = OPENAI_ERR_AUTH;
+        else if (http_resp->status_code == 429) client->last_error = OPENAI_ERR_RATE_LIMIT;
+        else if (http_resp->status_code >= 500) client->last_error = OPENAI_ERR_SERVER;
+        else client->last_error = OPENAI_ERR_API;
         openai_http_response_free(http_resp);
         return NULL;
     }
@@ -914,16 +958,17 @@ int openai_stream_read(void* stream, OpenAI_StreamEvent* event) {
                             role_start += 8;
                             const char* role_end = strchr(role_start, '"');
                             if (role_end && (size_t)(role_end - role_start) < 64) {
-                                event->role = (char*)malloc(role_end - role_start + 1);
-                                if (event->role) {
-                                    memcpy(event->role, role_start, role_end - role_start);
-                                    event->role[role_end - role_start] = '\0';
+                                if (handle->current_role) free(handle->current_role);
+                                handle->current_role = (char*)malloc(role_end - role_start + 1);
+                                if (handle->current_role) {
+                                    memcpy(handle->current_role, role_start, role_end - role_start);
+                                    handle->current_role[role_end - role_start] = '\0';
                                 }
                             }
                         }
                         const char* index_start = strstr(data_str, "\"index\":");
                         if (index_start) {
-                            event->index = atoi(index_start + 8);
+                            handle->current_index = atoi(index_start + 8);
                         }
                     }
                     /* Parse message_delta for stop_reason */
@@ -939,6 +984,13 @@ int openai_stream_read(void* stream, OpenAI_StreamEvent* event) {
                                     memcpy(event->stop_reason, stop_start, stop_len);
                                     event->stop_reason[stop_len] = '\0';
                                 }
+                                event->event_type = OPENAI_EVENT_CHUNK;
+                                handle->parse_pos = line_end + 1;
+                                if (handle->parse_pos < handle->buffer_size &&
+                                    (handle->buffer[handle->parse_pos] == '\n' || handle->buffer[handle->parse_pos] == '\r')) {
+                                    handle->parse_pos++;
+                                }
+                                return 0;
                             }
                         }
                     }
@@ -951,6 +1003,12 @@ int openai_stream_read(void* stream, OpenAI_StreamEvent* event) {
                             event->content = (char*)malloc(strlen(content) + 1);
                             if (event->content) strcpy(event->content, content);
                             event->event_type = OPENAI_EVENT_CHUNK;
+                            /* Fill role/index from saved handle state */
+                            if (handle->current_role) {
+                                event->role = (char*)malloc(strlen(handle->current_role) + 1);
+                                if (event->role) strcpy(event->role, handle->current_role);
+                            }
+                            event->index = handle->current_index;
                             handle->parse_pos = line_end + 1;
                             if (handle->parse_pos < handle->buffer_size &&
                                 (handle->buffer[handle->parse_pos] == '\n' || handle->buffer[handle->parse_pos] == '\r')) {
@@ -1000,6 +1058,28 @@ int openai_stream_read(void* stream, OpenAI_StreamEvent* event) {
                     handle->parse_pos++;
                 }
                 return 0;
+            } else if (ret == -1) {
+                /* No content found, check for finish_reason */
+                const char* finish_start = strstr(line_buffer, "\"finish_reason\":\"");
+                if (finish_start) {
+                    finish_start += 17; /* skip "\"finish_reason\":\"" */
+                    const char* finish_end = strchr(finish_start, '"');
+                    if (finish_end) {
+                        size_t finish_len = finish_end - finish_start;
+                        event->stop_reason = (char*)malloc(finish_len + 1);
+                        if (event->stop_reason) {
+                            memcpy(event->stop_reason, finish_start, finish_len);
+                            event->stop_reason[finish_len] = '\0';
+                        }
+                        event->event_type = OPENAI_EVENT_CHUNK;
+                        handle->parse_pos = line_end + 1;
+                        if (handle->parse_pos < handle->buffer_size &&
+                            (handle->buffer[handle->parse_pos] == '\n' || handle->buffer[handle->parse_pos] == '\r')) {
+                            handle->parse_pos++;
+                        }
+                        return 0;
+                    }
+                }
             }
             } /* end else (OpenAI) */
         }
@@ -1018,6 +1098,7 @@ void openai_stream_close(void* stream) {
     if (stream) {
         OpenAI_StreamHandle* handle = (OpenAI_StreamHandle*)stream;
         if (handle->buffer) free(handle->buffer);
+        if (handle->current_role) free(handle->current_role);
         free(handle);
     }
 }
@@ -1074,6 +1155,7 @@ OpenAI_EmbeddingResponse* openai_embeddings_create(OpenAI_Client* client, OpenAI
     free(body);
     if (!http_resp) {
         OPENAI_LOG_ERROR("Embeddings HTTP request failed");
+        client->last_error = OPENAI_ERR_NETWORK;
         return NULL;
     }
 
@@ -1081,6 +1163,10 @@ OpenAI_EmbeddingResponse* openai_embeddings_create(OpenAI_Client* client, OpenAI
         OPENAI_LOG_ERROR("Embeddings API error: status_code=%ld, body=%.200s",
             (long)http_resp->status_code,
             http_resp->body ? http_resp->body : "(null)");
+        if (http_resp->status_code == 401) client->last_error = OPENAI_ERR_AUTH;
+        else if (http_resp->status_code == 429) client->last_error = OPENAI_ERR_RATE_LIMIT;
+        else if (http_resp->status_code >= 500) client->last_error = OPENAI_ERR_SERVER;
+        else client->last_error = OPENAI_ERR_API;
         openai_http_response_free(http_resp);
         return NULL;
     }
@@ -1091,6 +1177,7 @@ OpenAI_EmbeddingResponse* openai_embeddings_create(OpenAI_Client* client, OpenAI
 
     if (!json) {
         OPENAI_LOG_ERROR("Failed to parse embeddings JSON response");
+        client->last_error = OPENAI_ERR_PARSE;
         return NULL;
     }
 

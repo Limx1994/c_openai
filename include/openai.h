@@ -53,6 +53,16 @@ int openai_client_set_base_url(OpenAI_Client* client, const char* base_url);
  */
 int openai_client_set_provider(OpenAI_Client* client, int provider);
 
+/**
+ * @brief Get last error code from client
+ * @param client Client handle
+ * @return Last error code (OpenAI_ErrorCode), or OPENAI_OK if no error
+ *
+ * Call this after a NULL return from openai_chat_create, openai_chat_create_stream,
+ * or openai_embeddings_create to get the specific error type.
+ */
+int openai_client_get_last_error(OpenAI_Client* client);
+
 /* Chat Completions API */
 
 /**

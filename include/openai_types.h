@@ -14,7 +14,6 @@
 typedef struct {
     char* role;      /**< Message role (system/user/assistant) */
     char* content;    /**< Message content */
-    char* name;      /**< Optional speaker name (reserved for future use, not currently sent in requests) */
 } OpenAI_Message;
 
 /**
@@ -24,7 +23,7 @@ typedef struct {
     char* model;          /**< Model name (e.g., "gpt-3.5-turbo") */
     OpenAI_Message* messages; /**< Array of messages */
     size_t message_count;   /**< Number of messages */
-    float temperature;     /**< Sampling temperature (0.0-2.0) */
+    float temperature;     /**< Sampling temperature (0.0-2.0), -1.0 = use API default */
     int max_tokens;        /**< Maximum tokens in response (0=default) */
     float top_p;           /**< Nucleus sampling parameter */
     int stream;            /**< Stream flag (set automatically for streaming) */
@@ -38,6 +37,7 @@ typedef struct {
     char* content;    /**< Response content */
     char* role;       /**< Message role */
     int index;        /**< Choice index */
+    char* finish_reason; /**< Stop reason (e.g., "stop", "length", "tool_calls") */
 } OpenAI_Choice;
 
 /**

@@ -62,14 +62,6 @@ double openai_json_get_number(OpenAI_JSONNode* parent, const char* key);
 OpenAI_JSONNode* openai_json_get_object(OpenAI_JSONNode* parent, const char* key);
 
 /**
- * @brief Get array item by index (O(n) per call, prefer iterators for loops)
- * @param parent Parent array node
- * @param index Item index (0-based)
- * @return Array item node, or NULL if not found
- */
-OpenAI_JSONNode* openai_json_get_array_item(OpenAI_JSONNode* parent, size_t index);
-
-/**
  * @brief Get first item in array (for iterator pattern)
  * @param parent Parent array node
  * @return First array item node, or NULL if empty
