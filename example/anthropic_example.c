@@ -62,8 +62,8 @@ static void example_anthropic_stream(OpenAI_Client* client) {
         if (event.content) {
             printf("%s", event.content);
             fflush(stdout);
-            openai_stream_event_free(&event);
         }
+        openai_stream_event_free(&event);
     }
     printf("\n");
     openai_stream_close(stream);

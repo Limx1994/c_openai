@@ -82,4 +82,14 @@ OpenAI_JSONNode* openai_json_array_next(OpenAI_JSONNode* current);
  */
 char* openai_json_escape_string(const char* str);
 
+/**
+ * @brief Serialize a JSON node tree back to a JSON string
+ * @param node Root node to serialize
+ * @return JSON string (caller must free), or NULL on failure
+ *
+ * Recursively serializes the node and all its children into a valid JSON string.
+ * Useful for serializing sub-trees (e.g., tool_use input objects).
+ */
+char* openai_json_serialize(OpenAI_JSONNode* node);
+
 #endif /* OPENAI_JSON_H */

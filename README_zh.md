@@ -34,10 +34,12 @@ c_openai/
 │   ├── libcurl/          # libcurl HTTP 库
 │   ├── lwip/             # lwIP TCP/IP 协议栈
 │   ├── mbedtls/          # mbedTLS 加密库
+│   ├── lwip_port/        # 最小 lwIP 平台适配头文件（编译检查用）
 │   └── CMakeLists.txt    # 第三方库构建配置
 ├── example/              # 示例代码
 │   ├── chat_example.c    # OpenAI Chat Completions
 │   └── anthropic_example.c  # Anthropic Messages API
+├── build.py              # 一键编译脚本（支持 lwIP/curl 后端）
 ├── build.sh              # libcurl 构建脚本（MinGW/MSYS2）
 ├── build_lwip.sh         # lwIP 构建脚本（ARM GCC）
 ├── CMakeLists.txt        # CMake 构建配置
@@ -54,7 +56,26 @@ c_openai/
 - Git（支持子模块）
 - 所有依赖库均通过 git submodule 集成（libcurl、lwIP、mbedtls）
 
-### 使用 libcurl 构建（默认，用于 PC/服务器）
+### 一键编译（推荐）
+
+```bash
+# 编译 lwIP 嵌入式后端（自动检测 STM32CubeIDE 中的 ARM 工具链）
+python build.py --backend lwip
+
+# 编译全部后端
+python build.py
+
+# 清理构建目录
+python build.py --clean
+
+# 详细模式（显示编译命令）
+python build.py -v
+
+# 自定义参数
+python build.py --backend lwip --timeout 60 --log-level 3 --no-tls
+```
+
+### 使用 libcurl 构建（用于 PC/服务器）
 
 ```bash
 mkdir build && cd build
@@ -263,6 +284,7 @@ openai_client_set_base_url(client, "https://your-proxy.com/v1");
 | `openai_json_parse(json_string)` | 解析 JSON 字符串为 DOM |
 | `openai_json_free(node)` | 释放 JSON DOM |
 | `openai_json_escape_string(str)` | 转义 JSON 字符串（防止注入） |
+| `openai_json_serialize(node)` | JSON 节点树序列化为字符串（调用方 free） |
 | `openai_json_get_string(parent, key)` | 从对象获取字符串值 |
 | `openai_json_get_number(parent, key)` | 从对象获取数字值 |
 | `openai_json_get_object(parent, key)` | 按键获取子对象 |
@@ -324,7 +346,7 @@ if (!resp) {
 
 4. **缓冲区溢出保护**：动态缓冲区扩展在写入前进行正确的大小检查，`snprintf` 偏移量计算也经过验证。
 
-5. **lwIP 后端流式请求支持**：libcurl 和 lwIP 后端现在都支持流式（SSE）请求，可在嵌入式设备上实现实时响应处理。
+5. **lwIP 后端流式请求支持**：libcurl 和 lwIP 后端均支持流式（SSE）请求。lwIP 后端持续读取直到连接关闭（不依赖 Content-Length），可在嵌入式设备上正确处理 SSE 事件流。
 
 ## 平台说明
 
