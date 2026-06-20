@@ -118,6 +118,14 @@ static const char* get_effective_base_url(OpenAI_Client* client) {
     return OPENAI_API_BASE;
 }
 
+/* Helper: set last_error based on HTTP status code */
+static void set_http_error(OpenAI_Client* client, int status_code) {
+    if (status_code == 401) client->last_error = OPENAI_ERR_AUTH;
+    else if (status_code == 429) client->last_error = OPENAI_ERR_RATE_LIMIT;
+    else if (status_code >= 500) client->last_error = OPENAI_ERR_SERVER;
+    else client->last_error = OPENAI_ERR_API;
+}
+
 static char* build_chat_request_body(OpenAI_ChatRequest* req) {
     /* Build JSON request body manually */
     size_t buf_size = 1024;
@@ -259,10 +267,9 @@ static char* build_anthropic_request_body(OpenAI_ChatRequest* req) {
     char* buf = (char*)malloc(buf_size);
     if (!buf) return NULL;
 
-    /* First pass: collect system messages and count non-system messages */
+    /* First pass: collect system messages */
     char* system_content = NULL;
     size_t system_len = 0;
-    size_t non_system_count = 0;
 
     for (size_t i = 0; i < req->message_count && req->messages; i++) {
         OpenAI_Message* msg = &req->messages[i];
@@ -292,8 +299,6 @@ static char* build_anthropic_request_body(OpenAI_ChatRequest* req) {
                 }
             }
             free(escaped);
-        } else {
-            non_system_count++;
         }
     }
 
@@ -451,11 +456,15 @@ static OpenAI_ChatResponse* parse_anthropic_response(OpenAI_JSONNode* json) {
                     text_block_count++;
                 }
             } else if (type && strcmp(type, "tool_use") == 0) {
-                /* tool_use blocks: serialize as JSON string */
+                /* tool_use blocks: serialize as JSON string including input */
                 const char* id = openai_json_get_string(block, "id");
                 const char* name = openai_json_get_string(block, "name");
+                OpenAI_JSONNode* input = openai_json_get_object(block, "input");
+                char* input_str = input ? openai_json_serialize(input) : NULL;
                 /* Estimate JSON size: {"id":"...","name":"...","input":...} */
-                total_content_len += (id ? strlen(id) : 0) + (name ? strlen(name) : 0) + 64;
+                total_content_len += (id ? strlen(id) : 0) + (name ? strlen(name) : 0) +
+                                     (input_str ? strlen(input_str) : 4) + 64;
+                free(input_str);
                 text_block_count++;
             }
         }
@@ -483,12 +492,17 @@ static OpenAI_ChatResponse* parse_anthropic_response(OpenAI_JSONNode* json) {
                             pos += len;
                         }
                     } else if (type && strcmp(type, "tool_use") == 0) {
-                        /* Serialize tool_use block as JSON string */
+                        /* Serialize tool_use block as JSON string including input */
                         const char* id = openai_json_get_string(block, "id");
                         const char* name = openai_json_get_string(block, "name");
+                        OpenAI_JSONNode* input = openai_json_get_object(block, "input");
+                        char* input_str = input ? openai_json_serialize(input) : NULL;
                         int written = snprintf(resp->choices[0].content + pos, total_content_len + 1 - pos,
-                            "{\"id\":\"%s\",\"name\":\"%s\"}", id ? id : "", name ? name : "");
+                            "{\"id\":\"%s\",\"name\":\"%s\",\"input\":%s}",
+                            id ? id : "", name ? name : "",
+                            input_str ? input_str : "null");
                         if (written > 0) pos += written;
+                        free(input_str);
                     }
                 }
                 resp->choices[0].content[pos] = '\0';
@@ -566,11 +580,7 @@ OpenAI_ChatResponse* openai_chat_create(OpenAI_Client* client, OpenAI_ChatReques
         OPENAI_LOG_ERROR("API error: status_code=%ld, body=%.200s",
             (long)http_resp->status_code,
             http_resp->body ? http_resp->body : "(null)");
-        /* Map HTTP status to error code */
-        if (http_resp->status_code == 401) client->last_error = OPENAI_ERR_AUTH;
-        else if (http_resp->status_code == 429) client->last_error = OPENAI_ERR_RATE_LIMIT;
-        else if (http_resp->status_code >= 500) client->last_error = OPENAI_ERR_SERVER;
-        else client->last_error = OPENAI_ERR_API;
+        set_http_error(client, http_resp->status_code);
         openai_http_response_free(http_resp);
         return NULL;
     }
@@ -642,6 +652,31 @@ OpenAI_ChatResponse* openai_chat_create(OpenAI_Client* client, OpenAI_ChatReques
                     resp->choices[ci].role = (char*)malloc(strlen(role) + 1);
                     if (resp->choices[ci].role) strcpy(resp->choices[ci].role, role);
                 }
+                /* Extract tool_calls if present */
+                OpenAI_JSONNode* tool_calls = openai_json_get_object(msg, "tool_calls");
+                if (tool_calls && tool_calls->child_count > 0) {
+                    /* Serialize tool_calls array as JSON string */
+                    char* tc_str = openai_json_serialize(tool_calls);
+                    if (tc_str) {
+                        /* If content is NULL, set tool_calls as content */
+                        if (!resp->choices[ci].content) {
+                            resp->choices[ci].content = tc_str;
+                        } else {
+                            /* Append tool_calls to content */
+                            size_t old_len = strlen(resp->choices[ci].content);
+                            size_t tc_len = strlen(tc_str);
+                            char* merged = (char*)malloc(old_len + tc_len + 2);
+                            if (merged) {
+                                memcpy(merged, resp->choices[ci].content, old_len);
+                                merged[old_len] = '\n';
+                                memcpy(merged + old_len + 1, tc_str, tc_len + 1);
+                                free(resp->choices[ci].content);
+                                resp->choices[ci].content = merged;
+                            }
+                            free(tc_str);
+                        }
+                    }
+                }
             }
             resp->choices[ci].index = (int)openai_json_get_number(choice, "index");
 
@@ -661,23 +696,13 @@ OpenAI_ChatResponse* openai_chat_create(OpenAI_Client* client, OpenAI_ChatReques
         char usage_buf[256];
         usage_buf[0] = '\0';
 
-        const char* prompt_tokens = openai_json_get_string(usage, "prompt_tokens");
-        const char* completion_tokens = openai_json_get_string(usage, "completion_tokens");
-        const char* total_tokens = openai_json_get_string(usage, "total_tokens");
-
-        if (prompt_tokens && completion_tokens && total_tokens) {
+        double p_tokens = openai_json_get_number(usage, "prompt_tokens");
+        double c_tokens = openai_json_get_number(usage, "completion_tokens");
+        double t_tokens = openai_json_get_number(usage, "total_tokens");
+        if (p_tokens > 0 || c_tokens > 0 || t_tokens > 0) {
             snprintf(usage_buf, sizeof(usage_buf),
-                "prompt_tokens=%s, completion_tokens=%s, total_tokens=%s",
-                prompt_tokens, completion_tokens, total_tokens);
-        } else {
-            double p_tokens = openai_json_get_number(usage, "prompt_tokens");
-            double c_tokens = openai_json_get_number(usage, "completion_tokens");
-            double t_tokens = openai_json_get_number(usage, "total_tokens");
-            if (p_tokens > 0 || c_tokens > 0 || t_tokens > 0) {
-                snprintf(usage_buf, sizeof(usage_buf),
-                    "prompt_tokens=%.0f, completion_tokens=%.0f, total_tokens=%.0f",
-                    p_tokens, c_tokens, t_tokens);
-            }
+                "prompt_tokens=%.0f, completion_tokens=%.0f, total_tokens=%.0f",
+                p_tokens, c_tokens, t_tokens);
         }
 
         if (usage_buf[0] != '\0') {
@@ -711,7 +736,6 @@ void openai_chat_response_free(OpenAI_ChatResponse* resp) {
 
 /* Streaming support */
 typedef struct {
-    OpenAI_Client* client;
     char* buffer;
     size_t buffer_size;
     size_t buffer_pos;
@@ -951,21 +975,25 @@ int openai_stream_read(void* stream, OpenAI_StreamEvent* event) {
                         handle->eof = 1;
                         return OPENAI_ERR_EOF;
                     }
-                    /* Parse content_block_start for role and index */
-                    if (strcmp(handle->current_event, "content_block_start") == 0) {
-                        const char* role_start = strstr(data_str, "\"role\":\"");
-                        if (role_start) {
-                            role_start += 8;
-                            const char* role_end = strchr(role_start, '"');
-                            if (role_end && (size_t)(role_end - role_start) < 64) {
+                    /* Parse message_start for role (Anthropic sends role here, not in content_block_start) */
+                    if (strcmp(handle->current_event, "message_start") == 0) {
+                        /* Look for "role":" inside "message":{...} */
+                        const char* msg_role = strstr(data_str, "\"role\":\"");
+                        if (msg_role) {
+                            msg_role += 8;
+                            const char* role_end = strchr(msg_role, '"');
+                            if (role_end && (size_t)(role_end - msg_role) < 64) {
                                 if (handle->current_role) free(handle->current_role);
-                                handle->current_role = (char*)malloc(role_end - role_start + 1);
+                                handle->current_role = (char*)malloc(role_end - msg_role + 1);
                                 if (handle->current_role) {
-                                    memcpy(handle->current_role, role_start, role_end - role_start);
-                                    handle->current_role[role_end - role_start] = '\0';
+                                    memcpy(handle->current_role, msg_role, role_end - msg_role);
+                                    handle->current_role[role_end - msg_role] = '\0';
                                 }
                             }
                         }
+                    }
+                    /* Parse content_block_start for index */
+                    if (strcmp(handle->current_event, "content_block_start") == 0) {
                         const char* index_start = strstr(data_str, "\"index\":");
                         if (index_start) {
                             handle->current_index = atoi(index_start + 8);

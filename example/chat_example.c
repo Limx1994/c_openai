@@ -74,9 +74,9 @@ static void example_streaming(OpenAI_Client* client) {
         if (event.content) {
             printf("%s", event.content);
             fflush(stdout);
-            free(event.content);
-            chunk_count++;
         }
+        openai_stream_event_free(&event);
+        chunk_count++;
     }
 
     printf("\nReceived %d chunks\n", chunk_count);

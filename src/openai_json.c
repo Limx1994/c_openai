@@ -355,3 +355,85 @@ char* openai_json_escape_string(const char* str) {
     *out = '\0';
     return result;
 }
+
+/* Helper for openai_json_serialize: append string to dynamic buffer */
+static int serialize_append(char** buf, size_t* buf_size, size_t* offset, const char* str, size_t len) {
+    while (*offset + len + 1 > *buf_size) {
+        *buf_size *= 2;
+        char* new_buf = (char*)realloc(*buf, *buf_size);
+        if (!new_buf) return -1;
+        *buf = new_buf;
+    }
+    memcpy(*buf + *offset, str, len);
+    *offset += len;
+    (*buf)[*offset] = '\0';
+    return 0;
+}
+
+static int serialize_node(OpenAI_JSONNode* node, char** buf, size_t* buf_size, size_t* offset);
+
+char* openai_json_serialize(OpenAI_JSONNode* node) {
+    if (!node) return NULL;
+
+    size_t buf_size = 256;
+    size_t offset = 0;
+    char* buf = (char*)malloc(buf_size);
+    if (!buf) return NULL;
+    buf[0] = '\0';
+
+    if (serialize_node(node, &buf, &buf_size, &offset) != 0) {
+        free(buf);
+        return NULL;
+    }
+    return buf;
+}
+
+static int serialize_node(OpenAI_JSONNode* node, char** buf, size_t* buf_size, size_t* offset) {
+    if (!node) return 0;
+
+    if (node->is_object) {
+        if (serialize_append(buf, buf_size, offset, "{", 1) != 0) return -1;
+        int first = 1;
+        for (OpenAI_JSONNode* child = (OpenAI_JSONNode*)node->children; child; child = (OpenAI_JSONNode*)child->next) {
+            if (!first) {
+                if (serialize_append(buf, buf_size, offset, ",", 1) != 0) return -1;
+            }
+            first = 0;
+            /* Key */
+            if (child->key) {
+                char* escaped_key = openai_json_escape_string(child->key);
+                size_t klen = escaped_key ? strlen(escaped_key) : strlen(child->key);
+                if (serialize_append(buf, buf_size, offset, "\"", 1) != 0) return -1;
+                if (serialize_append(buf, buf_size, offset, escaped_key ? escaped_key : child->key, klen) != 0) { free(escaped_key); return -1; }
+                if (serialize_append(buf, buf_size, offset, "\":", 2) != 0) { free(escaped_key); return -1; }
+                free(escaped_key);
+            }
+            /* Value */
+            if (serialize_node(child, buf, buf_size, offset) != 0) return -1;
+        }
+        if (serialize_append(buf, buf_size, offset, "}", 1) != 0) return -1;
+    } else if (node->is_array) {
+        if (serialize_append(buf, buf_size, offset, "[", 1) != 0) return -1;
+        int first = 1;
+        for (OpenAI_JSONNode* child = (OpenAI_JSONNode*)node->children; child; child = (OpenAI_JSONNode*)child->next) {
+            if (!first) {
+                if (serialize_append(buf, buf_size, offset, ",", 1) != 0) return -1;
+            }
+            first = 0;
+            if (serialize_node(child, buf, buf_size, offset) != 0) return -1;
+        }
+        if (serialize_append(buf, buf_size, offset, "]", 1) != 0) return -1;
+    } else if (node->string_value) {
+        char* escaped = openai_json_escape_string(node->string_value);
+        size_t slen = escaped ? strlen(escaped) : strlen(node->string_value);
+        if (serialize_append(buf, buf_size, offset, "\"", 1) != 0) return -1;
+        if (serialize_append(buf, buf_size, offset, escaped ? escaped : node->string_value, slen) != 0) { free(escaped); return -1; }
+        if (serialize_append(buf, buf_size, offset, "\"", 1) != 0) { free(escaped); return -1; }
+        free(escaped);
+    } else if (node->is_number) {
+        char num_buf[64];
+        int nlen = snprintf(num_buf, sizeof(num_buf), "%g", node->number_value);
+        if (serialize_append(buf, buf_size, offset, num_buf, nlen) != 0) return -1;
+    }
+    return 0;
+}

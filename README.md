@@ -34,10 +34,12 @@ c_openai/
 │   ├── libcurl/          # libcurl HTTP library
 │   ├── lwip/             # lwIP TCP/IP stack
 │   ├── mbedtls/          # mbedTLS encryption library
+│   ├── lwip_port/        # Minimal lwIP platform headers (for build check)
 │   └── CMakeLists.txt    # Third-party build config
 ├── example/              # Example code
 │   ├── chat_example.c    # OpenAI Chat Completions
 │   └── anthropic_example.c  # Anthropic Messages API
+├── build.py              # One-click build script (lwIP/curl backends)
 ├── build.sh              # libcurl build script (MinGW/MSYS2)
 ├── build_lwip.sh         # lwIP build script (ARM GCC)
 ├── CMakeLists.txt        # CMake build configuration
@@ -54,7 +56,26 @@ c_openai/
 - Git (with submodule support)
 - All dependencies included as git submodules (libcurl, lwIP, mbedtls)
 
-### Build with libcurl (default, for PC/Server)
+### One-Click Build (Recommended)
+
+```bash
+# Build lwIP backend (auto-detects ARM toolchain from STM32CubeIDE)
+python build.py --backend lwip
+
+# Build all backends
+python build.py
+
+# Clean build directory
+python build.py --clean
+
+# Verbose mode (show compile commands)
+python build.py -v
+
+# Custom options
+python build.py --backend lwip --timeout 60 --log-level 3 --no-tls
+```
+
+### Build with libcurl (for PC/Server)
 
 ```bash
 mkdir build && cd build
@@ -270,6 +291,7 @@ openai_client_set_base_url(client, "https://your-proxy.com/v1");
 | `openai_json_parse(json_string)`      | Parse JSON string into DOM                  |
 | `openai_json_free(node)`              | Free JSON DOM                               |
 | `openai_json_escape_string(str)`      | Escape string for JSON (prevents injection) |
+| `openai_json_serialize(node)`         | Serialize JSON node tree to string (caller free) |
 | `openai_json_get_string(parent, key)` | Get string value from object                |
 | `openai_json_get_number(parent, key)` | Get number value from object                |
 | `openai_json_get_object(parent, key)` | Get child object by key                     |
@@ -332,7 +354,7 @@ This library includes several security enhancements:
 
 4. **Buffer Overflow Protection**: Dynamic buffer expansion includes proper size checks before writing, with overflow checks in `snprintf` offset calculations.
 
-5. **lwIP Backend Streaming Support**: Both libcurl and lwIP backends now support streaming (SSE) requests for real-time response processing on embedded devices.
+5. **lwIP Backend Streaming Support**: Both libcurl and lwIP backends support streaming (SSE) requests. The lwIP backend reads until connection close (no Content-Length dependency), enabling proper SSE event streaming on embedded devices.
 
 ## Platform-Specific Notes
 
