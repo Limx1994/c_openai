@@ -978,10 +978,61 @@ void streaming_example(void)
 ```
 
 > **流式注意事项**：当前实现会先**缓冲完整响应**，再逐条解析返回。这意味着：
-> 
+>
 > - `openai_chat_create_stream()` 会阻塞直到收到完整响应
 > - `openai_stream_read()` 是非阻塞的（从缓冲区读取）
 > - 在嵌入式环境中，大响应可能消耗较多 RAM
+
+### 11.4 Extended Thinking（扩展思考）
+
+Anthropic 的 Extended Thinking 功能让 Claude 在回答前进行深度思考。启用后，响应中会包含 `thinking` 内容。
+
+```c
+void extended_thinking_example(void)
+{
+    OpenAI_Client *client = openai_client_new("sk-ant-your-key");
+    if (!client) return;
+
+    openai_client_set_provider(client, OPENAI_PROVIDER_ANTHROPIC);
+
+    OpenAI_Message messages[1];
+    messages[0].role = "user";
+    messages[0].content = "请详细分析快速排序算法的时间复杂度，并给出证明。";
+
+    OpenAI_ChatRequest req = {0};
+    req.model = "claude-sonnet-4-20250514";
+    req.messages = messages;
+    req.message_count = 1;
+    req.max_tokens = 16000;
+    req.thinking_enabled = 1;     /* 启用 Extended Thinking */
+    req.thinking_budget = 10000;  /* thinking token 预算 */
+
+    OpenAI_ChatResponse *resp = openai_chat_create(client, &req);
+    if (resp && resp->choice_count > 0) {
+        /* 思考过程 */
+        if (resp->choices[0].thinking) {
+            printf("=== 思考过程 ===\n%s\n", resp->choices[0].thinking);
+        }
+        /* 最终答案 */
+        if (resp->choices[0].content) {
+            printf("=== 最终答案 ===\n%s\n", resp->choices[0].content);
+        }
+        /* 结束原因 */
+        if (resp->choices[0].finish_reason) {
+            printf("结束原因: %s\n", resp->choices[0].finish_reason);
+        }
+        openai_chat_response_free(resp);
+    }
+
+    openai_client_free(client);
+}
+```
+
+> **Extended Thinking 注意事项**：
+> - `thinking_budget` 必须小于 `max_tokens`
+> - thinking 内容可能很长，注意内存限制
+> - 启用 thinking 后响应时间会增加
+> - `thinking_enabled=0`（默认）时不发送 thinking 参数，行为与普通请求一致
 
 ---
 

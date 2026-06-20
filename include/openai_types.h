@@ -28,6 +28,8 @@ typedef struct {
     float top_p;           /**< Nucleus sampling parameter */
     int stream;            /**< Stream flag (set automatically for streaming) */
     char* stop;            /**< Stop sequences */
+    int thinking_enabled;  /**< Anthropic Extended Thinking: 0=disabled, 1=enabled */
+    int thinking_budget;   /**< Anthropic Extended Thinking: token budget (default 10000) */
 } OpenAI_ChatRequest;
 
 /**
@@ -38,6 +40,7 @@ typedef struct {
     char* role;       /**< Message role */
     int index;        /**< Choice index */
     char* finish_reason; /**< Stop reason (e.g., "stop", "length", "tool_calls") */
+    char* thinking;   /**< Anthropic Extended Thinking content (caller must free) */
 } OpenAI_Choice;
 
 /**
@@ -83,6 +86,7 @@ typedef struct {
     char* role;               /**< Optional role (caller must free) */
     int index;                /**< Choice index */
     char* stop_reason;        /**< Stop reason for Anthropic (caller must free) */
+    char* thinking;           /**< Anthropic Extended Thinking delta (caller must free) */
 } OpenAI_StreamEvent;
 
 /**

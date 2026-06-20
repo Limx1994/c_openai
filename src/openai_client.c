@@ -406,6 +406,22 @@ static char* build_anthropic_request_body(OpenAI_ChatRequest* req) {
         free(escaped_stop);
     }
 
+    /* Add thinking parameter (Anthropic Extended Thinking) */
+    if (req->thinking_enabled) {
+        int budget = req->thinking_budget > 0 ? req->thinking_budget : 10000;
+        char think_buf[128];
+        int tlen = snprintf(think_buf, sizeof(think_buf),
+            ",\"thinking\":{\"type\":\"enabled\",\"budget_tokens\":%d}", budget);
+        while (offset + tlen >= (int)buf_size - 1) {
+            buf_size *= 2;
+            char* new_buf = (char*)realloc(buf, buf_size);
+            if (!new_buf) { free(buf); return NULL; }
+            buf = new_buf;
+        }
+        memcpy(buf + offset, think_buf, tlen);
+        offset += tlen;
+    }
+
     /* Add stream flag */
     snprintf(buf + offset, buf_size - offset, ",\"stream\":%s}",
         req->stream ? "true" : "false");
@@ -443,7 +459,9 @@ static OpenAI_ChatResponse* parse_anthropic_response(OpenAI_JSONNode* json) {
     /* Extract content array - concatenate all text blocks */
     OpenAI_JSONNode* content_arr = openai_json_get_object(json, "content");
     size_t total_content_len = 0;
+    size_t total_thinking_len = 0;
     size_t text_block_count = 0;
+    int has_thinking = 0;
 
     if (content_arr && content_arr->child_count > 0) {
         /* First pass: calculate total length */
@@ -461,23 +479,50 @@ static OpenAI_ChatResponse* parse_anthropic_response(OpenAI_JSONNode* json) {
                 const char* name = openai_json_get_string(block, "name");
                 OpenAI_JSONNode* input = openai_json_get_object(block, "input");
                 char* input_str = input ? openai_json_serialize(input) : NULL;
-                /* Estimate JSON size: {"id":"...","name":"...","input":...} */
                 total_content_len += (id ? strlen(id) : 0) + (name ? strlen(name) : 0) +
                                      (input_str ? strlen(input_str) : 4) + 64;
                 free(input_str);
                 text_block_count++;
+            } else if (type && strcmp(type, "thinking") == 0) {
+                const char* thinking = openai_json_get_string(block, "thinking");
+                if (thinking) {
+                    total_thinking_len += strlen(thinking);
+                    has_thinking = 1;
+                }
             }
         }
     }
 
-    /* Build concatenated content string */
-    if (text_block_count > 0 && total_content_len > 0) {
-        resp->choice_count = 1;
-        resp->choices = (OpenAI_Choice*)calloc(1, sizeof(OpenAI_Choice));
-        if (!resp->choices) {
-            resp->choice_count = 0;
+    /* Always allocate choices for Anthropic responses */
+    resp->choice_count = 1;
+    resp->choices = (OpenAI_Choice*)calloc(1, sizeof(OpenAI_Choice));
+    if (!resp->choices) {
+        resp->choice_count = 0;
+    }
+    if (resp->choices) {
+        /* Extract thinking blocks */
+        if (has_thinking && total_thinking_len > 0) {
+            resp->choices[0].thinking = (char*)malloc(total_thinking_len + 1);
+            if (resp->choices[0].thinking) {
+                resp->choices[0].thinking[0] = '\0';
+                size_t tpos = 0;
+                for (OpenAI_JSONNode* block = openai_json_array_first(content_arr); block; block = openai_json_array_next(block)) {
+                    const char* type = openai_json_get_string(block, "type");
+                    if (type && strcmp(type, "thinking") == 0) {
+                        const char* thk = openai_json_get_string(block, "thinking");
+                        if (thk) {
+                            size_t len = strlen(thk);
+                            memcpy(resp->choices[0].thinking + tpos, thk, len);
+                            tpos += len;
+                        }
+                    }
+                }
+                resp->choices[0].thinking[tpos] = '\0';
+            }
         }
-        if (resp->choices) {
+
+        /* Build concatenated content string (text + tool_use) */
+        if (text_block_count > 0 && total_content_len > 0) {
             resp->choices[0].content = (char*)malloc(total_content_len + 1);
             if (resp->choices[0].content) {
                 resp->choices[0].content[0] = '\0';
@@ -507,9 +552,17 @@ static OpenAI_ChatResponse* parse_anthropic_response(OpenAI_JSONNode* json) {
                 }
                 resp->choices[0].content[pos] = '\0';
             }
-            resp->choices[0].role = (char*)malloc(strlen(role ? role : "assistant") + 1);
-            if (resp->choices[0].role)
+        }
+
+        resp->choices[0].role = (char*)malloc(strlen(role ? role : "assistant") + 1);
+        if (resp->choices[0].role)
                 strcpy(resp->choices[0].role, role ? role : "assistant");
+
+        /* Extract stop_reason */
+        const char* stop_reason = openai_json_get_string(json, "stop_reason");
+        if (stop_reason) {
+            resp->choices[0].finish_reason = (char*)malloc(strlen(stop_reason) + 1);
+            if (resp->choices[0].finish_reason) strcpy(resp->choices[0].finish_reason, stop_reason);
         }
     }
 
@@ -727,6 +780,7 @@ void openai_chat_response_free(OpenAI_ChatResponse* resp) {
                 if (resp->choices[i].content) free(resp->choices[i].content);
                 if (resp->choices[i].role) free(resp->choices[i].role);
                 if (resp->choices[i].finish_reason) free(resp->choices[i].finish_reason);
+                if (resp->choices[i].thinking) free(resp->choices[i].thinking);
             }
             free(resp->choices);
         }
@@ -745,6 +799,7 @@ typedef struct {
     char current_event[64]; /* For Anthropic: tracks current event: line */
     char* current_role;     /* For Anthropic: current block role */
     int current_index;      /* For Anthropic: current block index */
+    char current_block_type[32]; /* For Anthropic: "text" or "thinking" */
 } OpenAI_StreamHandle;
 
 static int parse_sse_line(const char* line, size_t len, char* output, size_t output_size) {
@@ -992,11 +1047,21 @@ int openai_stream_read(void* stream, OpenAI_StreamEvent* event) {
                             }
                         }
                     }
-                    /* Parse content_block_start for index */
+                    /* Parse content_block_start for index and type */
                     if (strcmp(handle->current_event, "content_block_start") == 0) {
                         const char* index_start = strstr(data_str, "\"index\":");
                         if (index_start) {
                             handle->current_index = atoi(index_start + 8);
+                        }
+                        /* Extract block type: "text" or "thinking" */
+                        const char* type_start = strstr(data_str, "\"type\":\"");
+                        if (type_start) {
+                            type_start += 8;
+                            const char* type_end = strchr(type_start, '"');
+                            if (type_end && (size_t)(type_end - type_start) < sizeof(handle->current_block_type)) {
+                                memcpy(handle->current_block_type, type_start, type_end - type_start);
+                                handle->current_block_type[type_end - type_start] = '\0';
+                            }
                         }
                     }
                     /* Parse message_delta for stop_reason */
@@ -1028,8 +1093,14 @@ int openai_stream_read(void* stream, OpenAI_StreamEvent* event) {
                         int ret = parse_anthropic_sse_line(data_str, data_len,
                                                            content, sizeof(content));
                         if (ret == 0 && content[0] != '\0') {
-                            event->content = (char*)malloc(strlen(content) + 1);
-                            if (event->content) strcpy(event->content, content);
+                            /* Route to thinking or content based on block type */
+                            if (strcmp(handle->current_block_type, "thinking") == 0) {
+                                event->thinking = (char*)malloc(strlen(content) + 1);
+                                if (event->thinking) strcpy(event->thinking, content);
+                            } else {
+                                event->content = (char*)malloc(strlen(content) + 1);
+                                if (event->content) strcpy(event->content, content);
+                            }
                             event->event_type = OPENAI_EVENT_CHUNK;
                             /* Fill role/index from saved handle state */
                             if (handle->current_role) {
@@ -1136,9 +1207,11 @@ void openai_stream_event_free(OpenAI_StreamEvent* event) {
         if (event->content) free(event->content);
         if (event->role) free(event->role);
         if (event->stop_reason) free(event->stop_reason);
+        if (event->thinking) free(event->thinking);
         event->content = NULL;
         event->role = NULL;
         event->stop_reason = NULL;
+        event->thinking = NULL;
         /* event_type is static string, no need to free */
     }
 }

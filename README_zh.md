@@ -212,6 +212,40 @@ free(req.messages);
 openai_client_free(client);
 ```
 
+### Anthropic Extended Thinking（扩展思考）
+
+```c
+#include "openai.h"
+
+OpenAI_Client* client = openai_client_new("sk-ant-...");
+openai_client_set_provider(client, OPENAI_PROVIDER_ANTHROPIC);
+
+OpenAI_ChatRequest req = {0};
+req.model = "claude-sonnet-4-20250514";
+req.messages = malloc(sizeof(OpenAI_Message) * 1);
+req.messages[0].role = "user";
+req.messages[0].content = "解决这个复杂的数学问题...";
+req.message_count = 1;
+req.max_tokens = 16000;
+req.thinking_enabled = 1;     // 启用 Extended Thinking
+req.thinking_budget = 10000;  // thinking token 预算
+
+OpenAI_ChatResponse* resp = openai_chat_create(client, &req);
+if (resp && resp->choice_count > 0) {
+    // 访问 thinking 内容
+    if (resp->choices[0].thinking) {
+        printf("思考过程: %s\n", resp->choices[0].thinking);
+    }
+    // 访问最终答案
+    if (resp->choices[0].content) {
+        printf("答案: %s\n", resp->choices[0].content);
+    }
+}
+openai_chat_response_free(resp);
+free(req.messages);
+openai_client_free(client);
+```
+
 ### 环境变量
 
 通过环境变量设置 API key：
@@ -274,7 +308,7 @@ openai_client_set_base_url(client, "https://your-proxy.com/v1");
 |------|------|
 | `openai_chat_create_stream(client, req)` | 创建流式聊天请求 |
 | `openai_stream_read(stream, event)` | 从流中读取下一个事件 |
-| `openai_stream_event_free(event)` | 释放事件的 content/role/stop_reason 字段 |
+| `openai_stream_event_free(event)` | 释放事件的 content/role/stop_reason/thinking 字段 |
 | `openai_stream_close(stream)` | 关闭流并释放资源 |
 
 ### JSON 工具
