@@ -219,6 +219,40 @@ free(req.messages);
 openai_client_free(client);
 ```
 
+### Anthropic Extended Thinking
+
+```c
+#include "openai.h"
+
+OpenAI_Client* client = openai_client_new("sk-ant-...");
+openai_client_set_provider(client, OPENAI_PROVIDER_ANTHROPIC);
+
+OpenAI_ChatRequest req = {0};
+req.model = "claude-sonnet-4-20250514";
+req.messages = malloc(sizeof(OpenAI_Message) * 1);
+req.messages[0].role = "user";
+req.messages[0].content = "Solve this complex math problem...";
+req.message_count = 1;
+req.max_tokens = 16000;
+req.thinking_enabled = 1;     // Enable Extended Thinking
+req.thinking_budget = 10000;  // Token budget for thinking
+
+OpenAI_ChatResponse* resp = openai_chat_create(client, &req);
+if (resp && resp->choice_count > 0) {
+    // Access thinking content
+    if (resp->choices[0].thinking) {
+        printf("Thinking: %s\n", resp->choices[0].thinking);
+    }
+    // Access final answer
+    if (resp->choices[0].content) {
+        printf("Answer: %s\n", resp->choices[0].content);
+    }
+}
+openai_chat_response_free(resp);
+free(req.messages);
+openai_client_free(client);
+```
+
 ### Environment Variables
 
 Set your API key via environment:
@@ -281,7 +315,7 @@ openai_client_set_base_url(client, "https://your-proxy.com/v1");
 | ---------------------------------------- | ------------------------------------------ |
 | `openai_chat_create_stream(client, req)` | Create streaming chat request              |
 | `openai_stream_read(stream, event)`      | Read next event from stream                |
-| `openai_stream_event_free(event)`        | Free event content/role/stop_reason fields |
+| `openai_stream_event_free(event)`        | Free event content/role/stop_reason/thinking fields |
 | `openai_stream_close(stream)`            | Close stream and free resources            |
 
 ### JSON Utilities
