@@ -126,6 +126,18 @@ static void set_http_error(OpenAI_Client* client, int status_code) {
     else client->last_error = OPENAI_ERR_API;
 }
 
+static int validate_anthropic_request(OpenAI_ChatRequest* req) {
+    if (!req) return OPENAI_ERR_INVALID_PARAM;
+    if (req->thinking_enabled) {
+        int max_tokens = req->max_tokens > 0 ? req->max_tokens : 4096;
+        int budget = req->thinking_budget > 0 ? req->thinking_budget : max_tokens / 2;
+        if (budget <= 0 || budget >= max_tokens) {
+            return OPENAI_ERR_INVALID_PARAM;
+        }
+    }
+    return OPENAI_OK;
+}
+
 static char* build_chat_request_body(OpenAI_ChatRequest* req) {
     /* Build JSON request body manually */
     size_t buf_size = 1024;
@@ -354,8 +366,8 @@ static char* build_anthropic_request_body(OpenAI_ChatRequest* req) {
     }
     offset += snprintf(buf + offset, buf_size - offset, "]");
 
-    /* Add temperature */
-    if (req->temperature >= 0.0f) {
+    /* Add temperature. Anthropic Extended Thinking does not allow temperature changes. */
+    if (!req->thinking_enabled && req->temperature >= 0.0f) {
         char temp_buf[64];
         snprintf(temp_buf, sizeof(temp_buf), ",\"temperature\":%g", req->temperature);
         size_t temp_len = strlen(temp_buf);
@@ -408,7 +420,12 @@ static char* build_anthropic_request_body(OpenAI_ChatRequest* req) {
 
     /* Add thinking parameter (Anthropic Extended Thinking) */
     if (req->thinking_enabled) {
-        int budget = req->thinking_budget > 0 ? req->thinking_budget : 10000;
+        int max_tokens = req->max_tokens > 0 ? req->max_tokens : 4096;
+        int budget = req->thinking_budget > 0 ? req->thinking_budget : max_tokens / 2;
+        if (budget <= 0 || budget >= max_tokens) {
+            free(buf);
+            return NULL;
+        }
         char think_buf[128];
         int tlen = snprintf(think_buf, sizeof(think_buf),
             ",\"thinking\":{\"type\":\"enabled\",\"budget_tokens\":%d}", budget);
@@ -423,8 +440,17 @@ static char* build_anthropic_request_body(OpenAI_ChatRequest* req) {
     }
 
     /* Add stream flag */
-    snprintf(buf + offset, buf_size - offset, ",\"stream\":%s}",
-        req->stream ? "true" : "false");
+    {
+        const char* stream_value = req->stream ? "true" : "false";
+        size_t closing_len = strlen(",\"stream\":") + strlen(stream_value) + strlen("}");
+        while (offset + (int)closing_len >= (int)buf_size - 1) {
+            buf_size *= 2;
+            char* new_buf = (char*)realloc(buf, buf_size);
+            if (!new_buf) { free(buf); return NULL; }
+            buf = new_buf;
+        }
+        snprintf(buf + offset, buf_size - offset, ",\"stream\":%s}", stream_value);
+    }
 
     return buf;
 }
@@ -583,6 +609,14 @@ static OpenAI_ChatResponse* parse_anthropic_response(OpenAI_JSONNode* json) {
 
 OpenAI_ChatResponse* openai_chat_create(OpenAI_Client* client, OpenAI_ChatRequest* req) {
     if (!client || !req) return NULL;
+
+    if (client->provider == OPENAI_PROVIDER_ANTHROPIC) {
+        int validation = validate_anthropic_request(req);
+        if (validation != OPENAI_OK) {
+            client->last_error = validation;
+            return NULL;
+        }
+    }
 
     const char* base_url = get_effective_base_url(client);
     char url[512];
@@ -851,14 +885,23 @@ static int parse_anthropic_sse_line(const char* data, size_t data_len,
                                      char* output, size_t output_size) {
     /* Anthropic SSE data: {"type":"content_block_delta","index":0,
      * "delta":{"type":"text_delta","text":"..."}} */
-    const char* text_start = strstr(data, "\"text\":\"");
+    const char* text_start = strstr(data, "\"thinking\":\"");
+    if (!text_start) {
+        text_start = strstr(data, "\"text\":\"");
+    }
     if (!text_start) {
         /* Also try delta.text format */
-        text_start = strstr(data, "\"delta\":{\"type\":\"text_delta\",\"text\":\"");
-        if (text_start) text_start += 34; /* skip to text value */
-        else return -1;
+        const char* text_pattern = "\"delta\":{\"type\":\"text_delta\",\"text\":\"";
+        text_start = strstr(data, text_pattern);
+        if (text_start) text_start += strlen(text_pattern);
+        else {
+            const char* thinking_pattern = "\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"";
+            text_start = strstr(data, thinking_pattern);
+            if (text_start) text_start += strlen(thinking_pattern);
+            else return -1;
+        }
     } else {
-        text_start += 8; /* skip "\"text\":\"" */
+        text_start += (strncmp(text_start, "\"thinking\":\"", 12) == 0) ? 12 : 8;
     }
 
     const char* p = text_start;
@@ -905,6 +948,14 @@ static size_t find_line_end(const char* buffer, size_t size, size_t start) {
 
 void* openai_chat_create_stream(OpenAI_Client* client, OpenAI_ChatRequest* req) {
     if (!client || !req) return NULL;
+
+    if (client->provider == OPENAI_PROVIDER_ANTHROPIC) {
+        int validation = validate_anthropic_request(req);
+        if (validation != OPENAI_OK) {
+            client->last_error = validation;
+            return NULL;
+        }
+    }
 
     const char* base_url = get_effective_base_url(client);
     char url[512];
@@ -960,10 +1011,7 @@ void* openai_chat_create_stream(OpenAI_Client* client, OpenAI_ChatRequest* req) 
         OPENAI_LOG_ERROR("Streaming API error: status_code=%ld, body=%.200s",
             (long)http_resp->status_code,
             http_resp->body ? http_resp->body : "(null)");
-        if (http_resp->status_code == 401) client->last_error = OPENAI_ERR_AUTH;
-        else if (http_resp->status_code == 429) client->last_error = OPENAI_ERR_RATE_LIMIT;
-        else if (http_resp->status_code >= 500) client->last_error = OPENAI_ERR_SERVER;
-        else client->last_error = OPENAI_ERR_API;
+        set_http_error(client, http_resp->status_code);
         openai_http_response_free(http_resp);
         return NULL;
     }
@@ -1000,18 +1048,15 @@ int openai_stream_read(void* stream, OpenAI_StreamEvent* event) {
 
     memset(event, 0, sizeof(OpenAI_StreamEvent));
 
-    char line_buffer[4096];
-
     while (handle->parse_pos < handle->buffer_size) {
         size_t line_start = find_line_start(handle->buffer, handle->buffer_size, handle->parse_pos);
         size_t line_end = find_line_end(handle->buffer, handle->buffer_size, line_start);
 
         size_t line_len = line_end - line_start;
-        if (line_len >= sizeof(line_buffer)) {
-            line_len = sizeof(line_buffer) - 1;
-        }
 
         if (line_len > 0) {
+            char* line_buffer = (char*)malloc(line_len + 1);
+            if (!line_buffer) return OPENAI_ERR_MEMORY;
             memcpy(line_buffer, handle->buffer + line_start, line_len);
             line_buffer[line_len] = '\0';
 
@@ -1028,6 +1073,7 @@ int openai_stream_read(void* stream, OpenAI_StreamEvent* event) {
                     /* Check for message_stop */
                     if (strcmp(handle->current_event, "message_stop") == 0) {
                         handle->eof = 1;
+                        free(line_buffer);
                         return OPENAI_ERR_EOF;
                     }
                     /* Parse message_start for role (Anthropic sends role here, not in content_block_start) */
@@ -1055,6 +1101,10 @@ int openai_stream_read(void* stream, OpenAI_StreamEvent* event) {
                         }
                         /* Extract block type: "text" or "thinking" */
                         const char* type_start = strstr(data_str, "\"type\":\"");
+                        const char* content_block = strstr(data_str, "\"content_block\":");
+                        if (content_block) {
+                            type_start = strstr(content_block, "\"type\":\"");
+                        }
                         if (type_start) {
                             type_start += 8;
                             const char* type_end = strchr(type_start, '"');
@@ -1083,15 +1133,20 @@ int openai_stream_read(void* stream, OpenAI_StreamEvent* event) {
                                     (handle->buffer[handle->parse_pos] == '\n' || handle->buffer[handle->parse_pos] == '\r')) {
                                     handle->parse_pos++;
                                 }
+                                free(line_buffer);
                                 return 0;
                             }
                         }
                     }
                     /* Parse content_block_delta */
                     if (strcmp(handle->current_event, "content_block_delta") == 0) {
-                        char content[2048] = {0};
+                        char* content = (char*)calloc(1, line_len + 1);
+                        if (!content) {
+                            free(line_buffer);
+                            return OPENAI_ERR_MEMORY;
+                        }
                         int ret = parse_anthropic_sse_line(data_str, data_len,
-                                                           content, sizeof(content));
+                                                           content, line_len + 1);
                         if (ret == 0 && content[0] != '\0') {
                             /* Route to thinking or content based on block type */
                             if (strcmp(handle->current_block_type, "thinking") == 0) {
@@ -1113,18 +1168,27 @@ int openai_stream_read(void* stream, OpenAI_StreamEvent* event) {
                                 (handle->buffer[handle->parse_pos] == '\n' || handle->buffer[handle->parse_pos] == '\r')) {
                                 handle->parse_pos++;
                             }
+                            free(content);
+                            free(line_buffer);
                             return 0;
                         }
+                        free(content);
                     }
                 }
                 /* Skip empty lines and non-data lines for Anthropic */
             } else {
                 /* OpenAI SSE parsing */
-                char content[2048] = {0};
-                int ret = parse_sse_line(line_buffer, line_len, content, sizeof(content));
+                char* content = (char*)calloc(1, line_len + 1);
+                if (!content) {
+                    free(line_buffer);
+                    return OPENAI_ERR_MEMORY;
+                }
+                int ret = parse_sse_line(line_buffer, line_len, content, line_len + 1);
 
             if (ret == 1) {
                 handle->eof = 1;
+                free(content);
+                free(line_buffer);
                 return OPENAI_ERR_EOF;
             } else if (ret == 0 && content[0] != '\0') {
                 event->content = (char*)malloc(strlen(content) + 1);
@@ -1156,6 +1220,8 @@ int openai_stream_read(void* stream, OpenAI_StreamEvent* event) {
                     (handle->buffer[handle->parse_pos] == '\n' || handle->buffer[handle->parse_pos] == '\r')) {
                     handle->parse_pos++;
                 }
+                free(content);
+                free(line_buffer);
                 return 0;
             } else if (ret == -1) {
                 /* No content found, check for finish_reason */
@@ -1176,11 +1242,15 @@ int openai_stream_read(void* stream, OpenAI_StreamEvent* event) {
                             (handle->buffer[handle->parse_pos] == '\n' || handle->buffer[handle->parse_pos] == '\r')) {
                             handle->parse_pos++;
                         }
+                        free(content);
+                        free(line_buffer);
                         return 0;
                     }
                 }
             }
+            free(content);
             } /* end else (OpenAI) */
+            free(line_buffer);
         }
 
         handle->parse_pos = line_end + 1;
@@ -1264,10 +1334,7 @@ OpenAI_EmbeddingResponse* openai_embeddings_create(OpenAI_Client* client, OpenAI
         OPENAI_LOG_ERROR("Embeddings API error: status_code=%ld, body=%.200s",
             (long)http_resp->status_code,
             http_resp->body ? http_resp->body : "(null)");
-        if (http_resp->status_code == 401) client->last_error = OPENAI_ERR_AUTH;
-        else if (http_resp->status_code == 429) client->last_error = OPENAI_ERR_RATE_LIMIT;
-        else if (http_resp->status_code >= 500) client->last_error = OPENAI_ERR_SERVER;
-        else client->last_error = OPENAI_ERR_API;
+        set_http_error(client, http_resp->status_code);
         openai_http_response_free(http_resp);
         return NULL;
     }

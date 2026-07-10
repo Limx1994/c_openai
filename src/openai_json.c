@@ -115,11 +115,25 @@ static const char* openai_json_parse_object(const char* p, OpenAI_JSONNode* pare
         OpenAI_JSONNode* child = (OpenAI_JSONNode*)calloc(1, sizeof(OpenAI_JSONNode));
         if (!child) return p;
         p = openai_json_skip_space(p);
+        const char* before_key = p;
         p = openai_json_parse_string(p, &child->key);
+        if (p == before_key || !child->key) {
+            openai_json_free(child);
+            return before_key;
+        }
         p = openai_json_skip_space(p);
         if (*p == ':') p++;
+        else {
+            openai_json_free(child);
+            return p;
+        }
         p = openai_json_skip_space(p);
+        const char* before_value = p;
         p = openai_json_parse_value(p, child);
+        if (p == before_value) {
+            openai_json_free(child);
+            return before_value;
+        }
 
         if (!parent->children) {
             parent->children = child;
@@ -131,6 +145,7 @@ static const char* openai_json_parse_object(const char* p, OpenAI_JSONNode* pare
 
         p = openai_json_skip_space(p);
         if (*p == ',') p++;
+        else if (*p && *p != '}') return p;
         p = openai_json_skip_space(p);
     }
     if (*p == '}') p++;
@@ -149,7 +164,12 @@ static const char* openai_json_parse_array(const char* p, OpenAI_JSONNode* paren
         OpenAI_JSONNode* child = (OpenAI_JSONNode*)calloc(1, sizeof(OpenAI_JSONNode));
         if (!child) return p;
         p = openai_json_skip_space(p);
+        const char* before_value = p;
         p = openai_json_parse_value(p, child);
+        if (p == before_value) {
+            openai_json_free(child);
+            return before_value;
+        }
 
         if (!parent->children) {
             parent->children = child;
@@ -161,6 +181,7 @@ static const char* openai_json_parse_array(const char* p, OpenAI_JSONNode* paren
 
         p = openai_json_skip_space(p);
         if (*p == ',') p++;
+        else if (*p && *p != ']') return p;
         p = openai_json_skip_space(p);
     }
     if (*p == ']') p++;
@@ -206,7 +227,16 @@ OpenAI_JSONNode* openai_json_parse(const char* json_string) {
 
     OpenAI_JSONNode* root = (OpenAI_JSONNode*)calloc(1, sizeof(OpenAI_JSONNode));
     if (!root) return NULL;
-    openai_json_parse_value(p, root);
+    const char* end = openai_json_parse_value(p, root);
+    if (end == p) {
+        openai_json_free(root);
+        return NULL;
+    }
+    end = openai_json_skip_space(end);
+    if (*end != '\0') {
+        openai_json_free(root);
+        return NULL;
+    }
     return root;
 }
 
