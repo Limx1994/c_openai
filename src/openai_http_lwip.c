@@ -38,6 +38,7 @@ typedef struct {
     volatile uint32_t head;
     volatile uint32_t tail;
     volatile uint8_t data_ready;
+    volatile uint8_t overflow;
 } altcp_rx_ring_t;
 
 /* Per-PCB receive ring buffer (single-request-at-a-time) */
@@ -54,11 +55,17 @@ static err_t altcp_recv_cb(void *arg, struct altcp_pcb *pcb,
     }
     /* Copy pbuf data into ring buffer */
     struct pbuf *q;
+    u16_t copied_total = 0;
     for (q = p; q != NULL; q = q->next) {
         uint32_t h = s_rx_ring.head;
         uint32_t t = s_rx_ring.tail;
         uint32_t free_space = (t + ALTCP_RX_BUF_SIZE - h - 1) % ALTCP_RX_BUF_SIZE;
         uint32_t to_copy = q->len < free_space ? q->len : free_space;
+        if (to_copy < q->len) {
+            s_rx_ring.overflow = 1;
+            s_rx_ring.data_ready = 3;
+            break;
+        }
         uint32_t chunk1 = ALTCP_RX_BUF_SIZE - h;
         if (chunk1 > to_copy) chunk1 = to_copy;
         memcpy(s_rx_ring.buf + h, q->payload, chunk1);
@@ -66,11 +73,16 @@ static err_t altcp_recv_cb(void *arg, struct altcp_pcb *pcb,
             memcpy(s_rx_ring.buf, (uint8_t *)q->payload + chunk1, to_copy - chunk1);
         }
         s_rx_ring.head = (h + to_copy) % ALTCP_RX_BUF_SIZE;
+        copied_total = (u16_t)(copied_total + to_copy);
     }
-    s_rx_ring.data_ready = 1;
-    altcp_recved(pcb, p->tot_len);
+    if (!s_rx_ring.overflow) {
+        s_rx_ring.data_ready = 1;
+    }
+    if (copied_total > 0) {
+        altcp_recved(pcb, copied_total);
+    }
     pbuf_free(p);
-    return ERR_OK;
+    return s_rx_ring.overflow ? ERR_MEM : ERR_OK;
 }
 
 static void altcp_read_install_recv(struct altcp_pcb *pcb) {
@@ -78,6 +90,7 @@ static void altcp_read_install_recv(struct altcp_pcb *pcb) {
     s_rx_ring.head = 0;
     s_rx_ring.tail = 0;
     s_rx_ring.data_ready = 0;
+    s_rx_ring.overflow = 0;
     altcp_recv(pcb, altcp_recv_cb);
 }
 
@@ -88,12 +101,17 @@ static int altcp_read(struct altcp_pcb *pcb, void *buf, size_t len) {
     uint32_t t = s_rx_ring.tail;
     uint32_t h = s_rx_ring.head;
 
+    if (s_rx_ring.overflow) {
+        return -1;
+    }
+
     /* Wait for data or EOF */
     uint32_t timeout_ms = OPENAI_TIMEOUT * 1000;
     uint32_t start = sys_now();
     while (t == h && s_rx_ring.data_ready != 2) {
         if ((sys_now() - start) >= timeout_ms) return 0; /* timeout */
         sys_check_timeouts();
+        if (s_rx_ring.overflow) return -1;
     }
 
     if (s_rx_ring.data_ready == 2 && t == h) {
@@ -313,6 +331,45 @@ static char* build_http_header(OpenAI_HTTPRequest* req, const char* host,
     return header;
 }
 
+static char* decode_chunked_body(const char* body, size_t body_len, size_t* out_len) {
+    char* decoded = (char*)malloc(body_len + 1);
+    if (!decoded) return NULL;
+
+    size_t in_pos = 0;
+    size_t out_pos = 0;
+    while (in_pos < body_len) {
+        char* endptr = NULL;
+        unsigned long chunk_size = strtoul(body + in_pos, &endptr, 16);
+        if (endptr == body + in_pos) {
+            free(decoded);
+            return NULL;
+        }
+        while ((size_t)(endptr - body) < body_len && *endptr != '\n') endptr++;
+        if ((size_t)(endptr - body) >= body_len) {
+            free(decoded);
+            return NULL;
+        }
+        in_pos = (size_t)(endptr - body) + 1;
+        if (chunk_size == 0) {
+            decoded[out_pos] = '\0';
+            *out_len = out_pos;
+            return decoded;
+        }
+        if (chunk_size > body_len - in_pos) {
+            free(decoded);
+            return NULL;
+        }
+        memcpy(decoded + out_pos, body + in_pos, chunk_size);
+        out_pos += chunk_size;
+        in_pos += chunk_size;
+        if (in_pos < body_len && body[in_pos] == '\r') in_pos++;
+        if (in_pos < body_len && body[in_pos] == '\n') in_pos++;
+    }
+
+    free(decoded);
+    return NULL;
+}
+
 /* Parse HTTP response from raw buffer into OpenAI_HTTPResponse */
 static OpenAI_HTTPResponse* parse_http_response(char* buf, size_t buf_size) {
     OpenAI_HTTPResponse* resp = (OpenAI_HTTPResponse*)calloc(1, sizeof(OpenAI_HTTPResponse));
@@ -322,6 +379,13 @@ static OpenAI_HTTPResponse* parse_http_response(char* buf, size_t buf_size) {
 
     char* body_start = strstr(buf, "\r\n\r\n");
     if (body_start) {
+        int is_chunked = 0;
+        char* transfer_encoding = openai_strcasestr(buf, "transfer-encoding:");
+        if (transfer_encoding && transfer_encoding < body_start &&
+            openai_strcasestr(transfer_encoding, "chunked") &&
+            openai_strcasestr(transfer_encoding, "chunked") < body_start) {
+            is_chunked = 1;
+        }
         body_start += 4;
 
         /* Parse status line */
@@ -337,11 +401,15 @@ static OpenAI_HTTPResponse* parse_http_response(char* buf, size_t buf_size) {
         }
 
         size_t body_len = buf_size - (size_t)(body_start - buf);
-        resp->body = (char*)malloc(body_len + 1);
-        if (resp->body) {
-            memcpy(resp->body, body_start, body_len);
-            resp->body[body_len] = '\0';
-            resp->body_size = body_len;
+        if (is_chunked) {
+            resp->body = decode_chunked_body(body_start, body_len, &resp->body_size);
+        } else {
+            resp->body = (char*)malloc(body_len + 1);
+            if (resp->body) {
+                memcpy(resp->body, body_start, body_len);
+                resp->body[body_len] = '\0';
+                resp->body_size = body_len;
+            }
         }
     } else {
         resp->status_code = 0;
@@ -387,7 +455,11 @@ static char* recv_response(recv_fn_t recv_fn, void* recv_arg, int is_stream,
         size_t to_read = (buf_capacity - buf_size - 1) < 4096 ?
                          (buf_capacity - buf_size - 1) : 4096;
         int received = recv_fn(recv_arg, buf + buf_size, to_read);
-        if (received <= 0) break;
+        if (received < 0) {
+            free(buf);
+            return NULL;
+        }
+        if (received == 0) break;
         buf_size += received;
         buf[buf_size] = '\0';
 
@@ -418,7 +490,11 @@ static char* recv_response(recv_fn_t recv_fn, void* recv_arg, int is_stream,
                         if ((int)to_read2 > content_length - (int)body_received)
                             to_read2 = (size_t)(content_length - (int)body_received);
                         int received2 = recv_fn(recv_arg, buf + buf_size, to_read2);
-                        if (received2 <= 0) break;
+                        if (received2 < 0) {
+                            free(buf);
+                            return NULL;
+                        }
+                        if (received2 == 0) break;
                         buf_size += received2;
                         buf[buf_size] = '\0';
                         body_received += received2;

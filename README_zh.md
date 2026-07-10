@@ -1,4 +1,4 @@
-# C-OpenAI
+﻿# C-OpenAI
 
 跨平台的 OpenAI/Anthropic API C 语言客户端，专为 MCU（微控制器）和 POSIX 系统设计。
 
@@ -126,6 +126,8 @@ cmake .. -DOPENAI_HTTP_BACKEND=OPENAI_BACKEND_LWIP
 make
 ```
 
+OPENAI_HTTP_BACKEND 是 CMake 选项，支持 OPENAI_BACKEND_BOTH（默认）、OPENAI_BACKEND_CURL 和 OPENAI_BACKEND_LWIP。
+
 **注意**：ARM Cortex-M 平台需要在 `third_party/mbedtls/tf-psa-crypto/include/psa/crypto_config.h` 中禁用 `MBEDTLS_HAVE_ASM`（寄存器不足）。
 
 ### 构建选项
@@ -140,12 +142,13 @@ cmake .. -DOPENAI_HTTP_BACKEND=OPENAI_BACKEND_LWIP
 make
 ```
 
+OPENAI_HTTP_BACKEND 是 CMake 选项，支持 OPENAI_BACKEND_BOTH（默认）、OPENAI_BACKEND_CURL 和 OPENAI_BACKEND_LWIP。
+
 ## 配置
 
 编辑 `include/openai_config.h` 进行自定义：
 
 ```c
-#define OPENAI_HTTP_BACKEND OPENAI_BACKEND_CURL  // 或 OPENAI_BACKEND_LWIP
 #define OPENAI_TIMEOUT 30          // HTTP 超时秒数
 #define OPENAI_USE_TLS 1           // lwIP HTTPS（需要 mbedTLS）
 ```
@@ -407,8 +410,7 @@ make
 
 1. 将 lwIP 添加到项目中
 2. 配置 `OPENAI_HTTP_BACKEND=OPENAI_BACKEND_LWIP`
-3. 确保 `OPENAI_USE_MALLOC=0` 以启用无 malloc 模式
-4. 如需 HTTPS 支持，在 `lwipopts.h` 中启用 ALTCP + mbedTLS：
+3. 如需 HTTPS 支持，在 `lwipopts.h` 中启用 ALTCP + mbedTLS：
    ```c
    #define LWIP_ALTCP             1
    #define LWIP_ALTCP_TLS         1
@@ -436,3 +438,4 @@ CC BY-NC 4.0（Creative Commons 署名-非商业性使用 4.0 国际许可证）
 
 完整许可证内容请参阅 [LICENSE](LICENSE) 文件或访问：
 https://creativecommons.org/licenses/by-nc/4.0/deed.zh-hans
+

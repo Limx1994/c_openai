@@ -11,7 +11,7 @@ A cross-platform OpenAI/Anthropic API client written in C, designed for MCU (Mic
 - **Multi-provider support**:
   - OpenAI API (Chat Completions, Streaming, Embeddings)
   - Anthropic Messages API (Chat, Streaming)
-- **Configurable memory**: Dynamic allocation or static buffer mode (compile-time option)
+- **Dynamic memory**: Uses heap allocation with explicit ownership and free APIs
 - **Security**: JSON injection prevention, memory safety checks, secure auth header handling
 
 ## Project Structure
@@ -145,17 +145,24 @@ make
 # lwIP backend
 cmake .. -DOPENAI_HTTP_BACKEND=OPENAI_BACKEND_LWIP
 make
+
+# build both backend libraries
+cmake .. -DOPENAI_HTTP_BACKEND=OPENAI_BACKEND_BOTH
+make
 ```
 
 ## Configuration
 
-Edit `include/openai_config.h` to customize:
+Configure CMake and edit `include/openai_config.h` to customize:
 
 ```c
-#define OPENAI_HTTP_BACKEND OPENAI_BACKEND_CURL  // or OPENAI_BACKEND_LWIP
 #define OPENAI_TIMEOUT 30          // HTTP timeout in seconds
 #define OPENAI_USE_TLS 1           // for lwIP HTTPS (requires mbedTLS)
 ```
+
+`OPENAI_HTTP_BACKEND` is a CMake option. Supported values are
+`OPENAI_BACKEND_BOTH` (default), `OPENAI_BACKEND_CURL`, and
+`OPENAI_BACKEND_LWIP`.
 
 ## Usage
 
@@ -415,9 +422,8 @@ make
 ### STM32/Embedded
 
 1. Add lwIP to your project
-2. Configure `OPENAI_HTTP_BACKEND=OPENAI_BACKEND_LWIP`
-3. Ensure `OPENAI_USE_MALLOC=0` for no-malloc mode
-4. For HTTPS support, enable ALTCP + mbedTLS in `lwipopts.h`:
+2. Configure CMake with `OPENAI_HTTP_BACKEND=OPENAI_BACKEND_LWIP`
+3. For HTTPS support, enable ALTCP + mbedTLS in `lwipopts.h`:
    
    ```c
    #define LWIP_ALTCP             1
