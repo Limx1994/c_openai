@@ -20,7 +20,7 @@ typedef struct {
  * @brief Chat completion request structure
  */
 typedef struct {
-    char* model;          /**< Model name (e.g., "gpt-3.5-turbo") */
+    char* model;          /**< Model name (e.g., "gpt-4o-mini") */
     OpenAI_Message* messages; /**< Array of messages */
     size_t message_count;   /**< Number of messages */
     float temperature;     /**< Sampling temperature (0.0-2.0), -1.0 = use API default */

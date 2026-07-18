@@ -7,7 +7,7 @@ static void example_chat(OpenAI_Client* client) {
     printf("\n=== Chat Example ===\n");
 
     OpenAI_ChatRequest req = {0};
-    req.model = "gpt-3.5-turbo";
+    req.model = "gpt-4o-mini";
     req.messages = (OpenAI_Message*)malloc(sizeof(OpenAI_Message) * 1);
     if (!req.messages) {
         fprintf(stderr, "Failed to allocate messages\n");
@@ -44,7 +44,7 @@ static void example_streaming(OpenAI_Client* client) {
     printf("\n=== Streaming Example ===\n");
 
     OpenAI_ChatRequest req = {0};
-    req.model = "gpt-3.5-turbo";
+    req.model = "gpt-4o-mini";
     req.messages = (OpenAI_Message*)malloc(sizeof(OpenAI_Message) * 1);
     if (!req.messages) {
         fprintf(stderr, "Failed to allocate messages\n");

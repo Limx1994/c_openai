@@ -38,7 +38,7 @@ C-OpenAI 是一个 C 语言实现的 OpenAI/Anthropic API 客户端库，支持�
 
 ### 架构简图
 
-```
+```text
 ┌─────────────────────────────────────────┐
 │            你的应用代码                    │
 │         (chat_example.c 等)              │
@@ -60,7 +60,7 @@ C-OpenAI 是一个 C 语言实现的 OpenAI/Anthropic API 客户端库，支持�
 └─────────────────────────────────────────┘
 ```
 
-> **流式支持说明**：lwIP 后端已重构为真正的流式读取模式。`openai_http_request_stream()` 在无 Content-Length 时持续读取直到连接关闭，不再依赖 Content-Length 头。适用于 SSE 事件流（OpenAI/Anthropic 流式 API）。
+> **流式支持说明**：`openai_http_request_stream()` 在无 Content-Length 时持续读取直到连接关闭，不再依赖 Content-Length 头。后端会先缓冲完整响应，再由 `openai_stream_read()` 逐条返回 SSE 事件；它不会实时交付网络数据。
 
 ---
 
@@ -95,9 +95,7 @@ size_t strlen(const char *s);
 char*  strcpy(char *dst, const char *src);
 char*  strncpy(char *dst, const char *src, size_t n);
 int    strcmp(const char *s1, const char *s2);
-int    strncasecmp(const char *s1, const char *s2, size_t n);
 char*  strstr(const char *haystack, const char *needle);
-char*  strcasestr(const char *haystack, const char *needle);
 
 // 格式化输出
 int snprintf(char *str, size_t size, const char *format, ...);
@@ -110,7 +108,7 @@ int isdigit(int c);
 double strtod(const char *str, char **endptr);
 ```
 
-> **提示**：如果你的工具链没有 `strcasestr`，lwIP 后端源码中已自带一个内联实现 `openai_strcasestr()`。
+> **提示**：lwIP 后端使用内部的 `openai_strcasestr()`，不依赖平台提供 `strcasestr`。
 
 ---
 
@@ -141,7 +139,7 @@ git submodule update --init --recursive
 
 确认子模块目录存在：
 
-```
+```text
 third_party/lwip/src/core/       ← 核心协议代码
 third_party/lwip/src/include/    ← lwIP 头文件
 third_party/mbedtls/include/     ← mbedTLS 头文件
@@ -606,42 +604,31 @@ python build.py --clean
 ```
 
 输出文件在 `build_output/` 目录：
+
 - `libopenai_lwip.a` — lwIP 嵌入式后端库
 
 ### 方法一：独立编译（推荐 — 不链接第三方库）
 
-项目已支持独立编译模式，生成两个静态库（`.a`），可直接合并到你的工程中：
+项目支持独立编译 lwIP 后端静态库（`.a`），可直接合并到你的工程中：
 
 ```bash
 # 1. 初始化子模块（获取 lwIP/mbedTLS 源码，仅需头文件）
 git submodule update --init --recursive
 
-# 2. 创建构建目录
-mkdir build && cd build
+# 2. 配置（指定 lwIP 后端和依赖头文件路径）
+cmake -S . -B build -DOPENAI_HTTP_BACKEND=OPENAI_BACKEND_LWIP -DLWIP_INCLUDE_DIR="third_party/lwip/src/include" -DMBEDTLS_INCLUDE_DIR="third_party/mbedtls"
 
-# 3. 配置（指定 lwIP 和 mbedTLS 头文件路径）
-cmake .. \
-  -DLWIP_INCLUDE_DIR="../third_party/lwip/src/include" \
-  -DMBEDTLS_INCLUDE_DIR="../third_party/mbedtls"
+# 3. 编译
+cmake --build build --parallel 10
 
-# 4. 编译
-cmake --build .
-
-# 5. 获取输出
-#    libopenai_curl.a  — libcurl 后端（PC/服务器）
+# 4. 获取输出
 #    libopenai_lwip.a  — lwIP 后端（嵌入式）
 ```
 
 **可覆盖的编译选项：**
 
 ```bash
-cmake .. \
-  -DLWIP_INCLUDE_DIR="../third_party/lwip/src/include" \
-  -DMBEDTLS_INCLUDE_DIR="../third_party/mbedtls" \
-  -DOPENAI_LOG_ENABLED=0 \       # 关闭日志（默认 0）
-  -DOPENAI_LOG_LEVEL=0 \         # 日志级别 0-3
-  -DOPENAI_USE_TLS=1 \           # lwIP 启用 HTTPS（默认 1）
-  -DOPENAI_TIMEOUT=30            # 超时秒数
+cmake -S . -B build -DOPENAI_HTTP_BACKEND=OPENAI_BACKEND_LWIP -DOPENAI_LOG_ENABLED=0 -DOPENAI_LOG_LEVEL=0 -DOPENAI_USE_TLS=1 -DOPENAI_TIMEOUT=30
 ```
 
 **合并到你的工程：**
@@ -704,7 +691,7 @@ target_link_libraries(openai PRIVATE lwip mbedtls)
 
 将以下源文件添加到你的工程：
 
-```
+```text
 源文件（必须）：
   c_openai/src/openai_client.c
   c_openai/src/openai_json.c
@@ -808,7 +795,7 @@ void network_poll(void)
 ```
 
 > **关键点**：
-> 
+>
 > - `sys_check_timeouts()` 必须定期调用（裸机中放主循环，RTOS 中放独立任务）
 > - 网络接口必须 `netif_set_up()` 后才能发送数据
 > - DNS 解析需要 UDP 支持（`LWIP_UDP=1`）
@@ -848,7 +835,7 @@ void chat_example(void)
 
     /* 构造请求 */
     OpenAI_ChatRequest req = {0};    /* 零初始化很重要 */
-    req.model = "gpt-3.5-turbo";
+    req.model = "gpt-4o-mini";
     req.messages = messages;
     req.message_count = 2;
     req.max_tokens = 128;
@@ -946,7 +933,7 @@ void streaming_example(void)
     messages[0].content = "Write a haiku about coding";
 
     OpenAI_ChatRequest req = {0};
-    req.model = "gpt-3.5-turbo";
+    req.model = "gpt-4o-mini";
     req.messages = messages;
     req.message_count = 1;
     req.max_tokens = 100;
@@ -1029,6 +1016,7 @@ void extended_thinking_example(void)
 ```
 
 > **Extended Thinking 注意事项**：
+>
 > - `thinking_budget` 必须小于 `max_tokens`
 > - thinking 内容可能很长，注意内存限制
 > - 启用 thinking 后响应时间会增加
@@ -1170,7 +1158,7 @@ ESP-IDF 自带 lwIP 和 mbedTLS，**无需使用项目子模块**：
 1. **单客户端限制** — 同一时刻只能存在一个 `OpenAI_Client` 实例（全局计数器控制）
 2. **非线程安全** — lwIP 后端使用静态全局变量，不支持多线程并发请求
 3. **无连接复用** — 每次请求都新建 TCP 连接，无 HTTP Keep-Alive
-4. **流式请求** — lwIP 后端已改为真正的流式读取（不依赖 Content-Length）；curl 后端仍为缓冲模式（先收集完整响应再解析）
+4. **流式请求** — 两个后端均先缓冲完整响应，再逐条解析 SSE 事件；内存占用随响应大小增长
 5. **无重试机制** — 请求失败不会自动重试
 6. **无代理支持** — lwIP 后端不支持 HTTP 代理
 7. **DNS 无缓存** — 每次请求都做 DNS 查询
@@ -1180,15 +1168,14 @@ ESP-IDF 自带 lwIP 和 mbedTLS，**无需使用项目子模块**：
 
 ## 快速参考：最小移植清单
 
-```
+```text
 方法一：独立编译（推荐）
 □ 1. git submodule update --init --recursive
-□ 2. mkdir build && cd build
-□ 3. cmake .. -DLWIP_INCLUDE_DIR="..." -DMBEDTLS_INCLUDE_DIR="..."
-□ 4. cmake --build .
-□ 5. 获取 libopenai_lwip.a，合并到你的工程
-□ 6. 确保网络已初始化（参考第 10 节）
-□ 7. 链接 openai_lwip + lwip + mbedtls 静态库
+□ 2. cmake -S . -B build -DOPENAI_HTTP_BACKEND=OPENAI_BACKEND_LWIP -DLWIP_INCLUDE_DIR="..." -DMBEDTLS_INCLUDE_DIR="..."
+□ 3. cmake --build build --parallel 10
+□ 4. 获取 libopenai_lwip.a，合并到你的工程
+□ 5. 确保网络已初始化（参考第 10 节）
+□ 6. 链接 openai_lwip + lwip + mbedtls 静态库
 
 方法二：直接集成源码
 □ 1. git submodule update --init --recursive
