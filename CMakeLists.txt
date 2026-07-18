@@ -7,8 +7,9 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 option(OPENAI_LOG_ENABLED "Enable logging (0/1)" 0)
 set(OPENAI_LOG_LEVEL 0 CACHE STRING "Log level (0=error 1=warn 2=info 3=debug)")
 option(OPENAI_USE_TLS "Enable HTTPS for lwIP backend (0/1)" 1)
+option(OPENAI_BUILD_EXAMPLES "Build example programs" OFF)
 set(OPENAI_TIMEOUT 30 CACHE STRING "HTTP request timeout in seconds")
-set(OPENAI_HTTP_BACKEND "OPENAI_BACKEND_BOTH" CACHE STRING "HTTP backend")
+set(OPENAI_HTTP_BACKEND "OPENAI_BACKEND_CURL" CACHE STRING "HTTP backend")
 set_property(CACHE OPENAI_HTTP_BACKEND PROPERTY STRINGS
     OPENAI_BACKEND_BOTH OPENAI_BACKEND_CURL OPENAI_BACKEND_LWIP)
 
@@ -40,7 +41,7 @@ if(OPENAI_HTTP_BACKEND STREQUAL "OPENAI_BACKEND_BOTH" OR
         ${OPENAI_CORE_SRCS}
         ${OPENAI_CURL_SRC}
     )
-    target_include_directories(openai_curl PRIVATE
+    target_include_directories(openai_curl PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/include
         ${CMAKE_CURRENT_SOURCE_DIR}/third_party/libcurl/include
     )
@@ -49,6 +50,26 @@ if(OPENAI_HTTP_BACKEND STREQUAL "OPENAI_BACKEND_BOTH" OR
         ${COMMON_DEFS}
         OPENAI_USE_TLS=${OPENAI_USE_TLS_VALUE}
     )
+endif()
+
+if(OPENAI_BUILD_EXAMPLES)
+    if(NOT TARGET openai_curl)
+        message(FATAL_ERROR "OPENAI_BUILD_EXAMPLES requires the curl backend")
+    endif()
+
+    set(BUILD_CURL_EXE OFF CACHE BOOL "" FORCE)
+    set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+    set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+    set(BUILD_STATIC_LIBS ON CACHE BOOL "" FORCE)
+    set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
+    set(CURL_DISABLE_INSTALL ON CACHE BOOL "" FORCE)
+    set(CURL_USE_LIBPSL OFF CACHE BOOL "" FORCE)
+    if(WIN32)
+        set(CURL_USE_SCHANNEL ON CACHE BOOL "" FORCE)
+    endif()
+    add_subdirectory(third_party/libcurl EXCLUDE_FROM_ALL)
+    target_link_libraries(openai_curl PUBLIC libcurl)
+    add_subdirectory(example)
 endif()
 
 if(OPENAI_HTTP_BACKEND STREQUAL "OPENAI_BACKEND_BOTH" OR
@@ -88,6 +109,9 @@ if(OPENAI_HTTP_BACKEND STREQUAL "OPENAI_BACKEND_BOTH" OR
         LWIP_ALTCP_TLS_MBEDTLS=1
         OPENAI_USE_TLS=${OPENAI_USE_TLS_VALUE}
     )
+    if(WIN32)
+        target_compile_definitions(openai_lwip PRIVATE LWIP_TIMEVAL_PRIVATE=0)
+    endif()
 endif()
 
 message(STATUS "")

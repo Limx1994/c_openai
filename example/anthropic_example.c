@@ -7,7 +7,7 @@ static void example_anthropic_chat(OpenAI_Client* client) {
     printf("\n=== Anthropic Chat Example ===\n");
 
     OpenAI_ChatRequest req = {0};
-    req.model = "claude-3-opus-20240229";
+    req.model = "claude-sonnet-4-20250514";
     req.messages = (OpenAI_Message*)malloc(sizeof(OpenAI_Message) * 2);
     if (!req.messages) return;
 
@@ -38,7 +38,7 @@ static void example_anthropic_stream(OpenAI_Client* client) {
     printf("\n=== Anthropic Streaming Example ===\n");
 
     OpenAI_ChatRequest req = {0};
-    req.model = "claude-3-opus-20240229";
+    req.model = "claude-sonnet-4-20250514";
     req.messages = (OpenAI_Message*)malloc(sizeof(OpenAI_Message) * 1);
     if (!req.messages) return;
 

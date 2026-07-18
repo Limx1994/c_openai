@@ -16,7 +16,7 @@ A cross-platform OpenAI/Anthropic API client written in C, designed for MCU (Mic
 
 ## Project Structure
 
-```
+```text
 c_openai/
 ├── include/              # Public headers
 │   ├── openai.h          # Main API
@@ -78,9 +78,8 @@ python build.py --backend lwip --timeout 60 --log-level 3 --no-tls
 ### Build with libcurl (for PC/Server)
 
 ```bash
-mkdir build && cd build
-cmake ..
-make
+cmake -S . -B build
+cmake --build build --parallel 10
 ```
 
 Or use the build script (MinGW/MSYS2):
@@ -129,8 +128,8 @@ bash build_lwip.sh
 Or with CMake:
 
 ```bash
-cmake .. -DOPENAI_HTTP_BACKEND=OPENAI_BACKEND_LWIP
-make
+cmake -S . -B build -DOPENAI_HTTP_BACKEND=OPENAI_BACKEND_LWIP
+cmake --build build --parallel 10
 ```
 
 **Note**: For ARM Cortex-M targets, `MBEDTLS_HAVE_ASM` must be disabled in `third_party/mbedtls/tf-psa-crypto/include/psa/crypto_config.h` due to register constraints.
@@ -139,16 +138,20 @@ make
 
 ```bash
 # libcurl backend (default)
-cmake ..
-make
+cmake -S . -B build
+cmake --build build --parallel 10
 
 # lwIP backend
-cmake .. -DOPENAI_HTTP_BACKEND=OPENAI_BACKEND_LWIP
-make
+cmake -S . -B build -DOPENAI_HTTP_BACKEND=OPENAI_BACKEND_LWIP
+cmake --build build --parallel 10
 
 # build both backend libraries
-cmake .. -DOPENAI_HTTP_BACKEND=OPENAI_BACKEND_BOTH
-make
+cmake -S . -B build -DOPENAI_HTTP_BACKEND=OPENAI_BACKEND_BOTH
+cmake --build build --parallel 10
+
+# build examples with the bundled libcurl
+cmake -S . -B build -DOPENAI_BUILD_EXAMPLES=ON
+cmake --build build --parallel 10
 ```
 
 ## Configuration
@@ -161,7 +164,7 @@ Configure CMake and edit `include/openai_config.h` to customize:
 ```
 
 `OPENAI_HTTP_BACKEND` is a CMake option. Supported values are
-`OPENAI_BACKEND_BOTH` (default), `OPENAI_BACKEND_CURL`, and
+`OPENAI_BACKEND_CURL` (default), `OPENAI_BACKEND_BOTH`, and
 `OPENAI_BACKEND_LWIP`.
 
 ## Usage
@@ -174,7 +177,7 @@ OpenAI_Client* client = openai_client_new("sk-...");
 
 // Prepare chat request
 OpenAI_ChatRequest req = {0};
-req.model = "gpt-3.5-turbo";
+req.model = "gpt-4o-mini";
 req.messages = malloc(sizeof(OpenAI_Message) * 2);
 req.messages[0].role = "system";
 req.messages[0].content = "You are a helpful assistant.";
@@ -208,7 +211,7 @@ openai_client_set_provider(client, OPENAI_PROVIDER_ANTHROPIC);
 
 // Same API as OpenAI - system prompt is extracted automatically
 OpenAI_ChatRequest req = {0};
-req.model = "claude-3-opus-20240229";
+req.model = "claude-sonnet-4-20250514";
 req.messages = malloc(sizeof(OpenAI_Message) * 2);
 req.messages[0].role = "system";
 req.messages[0].content = "You are a helpful assistant.";
@@ -387,7 +390,7 @@ if (!resp) {
 
 This library includes several security enhancements:
 
-1. **JSON Injection Prevention**: The `openai_json_escape_string()` function escapes special characters (`"`, `\`, `/`, `\n`, `\r`, `\t`) to prevent JSON injection attacks when embedding user content. This applies to model names, roles, and message content in Chat Completions and Embeddings requests.
+1. **JSON Injection Prevention**: The `openai_json_escape_string()` function escapes special characters (`"`, `\`, `\n`, `\r`, `\t`) to prevent JSON injection attacks when embedding user content. This applies to model names, roles, and message content in Chat Completions and Embeddings requests.
 
 2. **Memory Safety**: All `malloc()`, `calloc()`, and `realloc()` calls include NULL pointer checks to prevent crashes from allocation failures.
 
@@ -395,7 +398,7 @@ This library includes several security enhancements:
 
 4. **Buffer Overflow Protection**: Dynamic buffer expansion includes proper size checks before writing, with overflow checks in `snprintf` offset calculations.
 
-5. **lwIP Backend Streaming Support**: Both libcurl and lwIP backends support streaming (SSE) requests. The lwIP backend reads until connection close (no Content-Length dependency), enabling proper SSE event streaming on embedded devices.
+5. **SSE Event Parsing**: Both backends buffer the complete HTTP response before `openai_stream_read()` returns individual SSE events. The API does not deliver network data incrementally and memory usage grows with the complete response size.
 
 ## Platform-Specific Notes
 
@@ -414,9 +417,8 @@ git submodule update --init --recursive
 ```bash
 git clone --recursive https://github.com/Limx1994/c_openai.git
 cd c_openai
-mkdir build && cd build
-cmake .. -G "MSYS Makefiles"
-make
+cmake -S . -B build -G "MSYS Makefiles"
+cmake --build build --parallel 10
 ```
 
 ### STM32/Embedded
@@ -424,7 +426,7 @@ make
 1. Add lwIP to your project
 2. Configure CMake with `OPENAI_HTTP_BACKEND=OPENAI_BACKEND_LWIP`
 3. For HTTPS support, enable ALTCP + mbedTLS in `lwipopts.h`:
-   
+
    ```c
    #define LWIP_ALTCP             1
    #define LWIP_ALTCP_TLS         1
@@ -440,16 +442,19 @@ This project is licensed under the Creative Commons Attribution-NonCommercial
 **non-commercial purposes only**.
 
 **Allowed**:
+
 - ✅ Copy and redistribute the material
 - ✅ Remix, transform, and build upon the material
 
 **Required**:
+
 - 📋 Attribution: You must give appropriate credit
 
 **Prohibited**:
+
 - ❌ Commercial use of any kind
 
 For commercial use, please contact the author for a separate license.
 
 See [LICENSE](LICENSE) for full details or visit:
-https://creativecommons.org/licenses/by-nc/4.0/
+<https://creativecommons.org/licenses/by-nc/4.0/>

@@ -145,9 +145,9 @@ static char* build_chat_request_body(OpenAI_ChatRequest* req) {
     if (!buf) return NULL;
 
     /* Escape model to prevent JSON injection */
-    char* escaped_model = openai_json_escape_string(req->model ? req->model : "gpt-3.5-turbo");
+    char* escaped_model = openai_json_escape_string(req->model ? req->model : "gpt-4o-mini");
     int offset = snprintf(buf, buf_size,
-        "{\"model\":\"%s\",\"messages\":[", escaped_model ? escaped_model : "gpt-3.5-turbo");
+        "{\"model\":\"%s\",\"messages\":[", escaped_model ? escaped_model : "gpt-4o-mini");
     free(escaped_model);
 
     int first_msg = 1;
@@ -315,10 +315,10 @@ static char* build_anthropic_request_body(OpenAI_ChatRequest* req) {
     }
 
     /* Build JSON: model, max_tokens, system (if any), messages, optional params, stream */
-    char* escaped_model = openai_json_escape_string(req->model ? req->model : "claude-3-opus-20240229");
+    char* escaped_model = openai_json_escape_string(req->model ? req->model : "claude-sonnet-4-20250514");
     int offset = snprintf(buf, buf_size,
         "{\"model\":\"%s\",\"max_tokens\":%d",
-        escaped_model ? escaped_model : "claude-3-opus-20240229",
+        escaped_model ? escaped_model : "claude-sonnet-4-20250514",
         req->max_tokens > 0 ? req->max_tokens : 4096);
     free(escaped_model);
 

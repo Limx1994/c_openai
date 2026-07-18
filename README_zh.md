@@ -11,12 +11,12 @@
 - **多提供商支持**：
   - OpenAI API（Chat Completions、Streaming、Embeddings）
   - Anthropic Messages API（Chat、Streaming）
-- **可配置内存**：动态分配或静态缓冲区模式（编译时选项）
+- **动态内存**：使用堆分配，并提供明确的资源释放 API
 - **安全性**：JSON 注入防护、内存安全检查、安全的认证头处理
 
 ## 项目结构
 
-```
+```text
 c_openai/
 ├── include/              # 公共头文件
 │   ├── openai.h          # 主 API
@@ -78,12 +78,12 @@ python build.py --backend lwip --timeout 60 --log-level 3 --no-tls
 ### 使用 libcurl 构建（用于 PC/服务器）
 
 ```bash
-mkdir build && cd build
-cmake ..
-make
+cmake -S . -B build
+cmake --build build --parallel 10
 ```
 
 或使用构建脚本（MinGW/MSYS2）：
+
 ```bash
 bash build.sh
 ```
@@ -91,10 +91,12 @@ bash build.sh
 ### lwIP 后端（用于嵌入式/MCU）
 
 lwIP 后端同时支持 HTTP 和 HTTPS：
+
 - **HTTP**：纯 TCP socket，无 TLS 开销
 - **HTTPS**：使用 ALTCP + mbedTLS 实现加密连接
 
 **重要**：lwIP 和 mbedTLS 通过 git submodule 集成，克隆时需：
+
 ```bash
 git clone --recursive https://github.com/Limx1994/c_openai.git
 # 或如果已经克隆：
@@ -102,6 +104,7 @@ git submodule update --init --recursive
 ```
 
 使用 HTTPS 时，需在 `lwipopts.h` 中启用：
+
 ```c
 #define LWIP_ALTCP             1
 #define LWIP_ALTCP_TLS         1
@@ -109,6 +112,7 @@ git submodule update --init --recursive
 ```
 
 并在 `openai_config.h` 中配置：
+
 ```c
 #define OPENAI_USE_TLS 1          // 启用 TLS
 ```
@@ -116,17 +120,19 @@ git submodule update --init --recursive
 ### 使用 lwIP 构建（用于嵌入式/MCU）
 
 使用构建脚本（推荐，需要 STM32CubeIDE 中的 ARM GCC）：
+
 ```bash
 bash build_lwip.sh
 ```
 
 或使用 CMake：
+
 ```bash
-cmake .. -DOPENAI_HTTP_BACKEND=OPENAI_BACKEND_LWIP
-make
+cmake -S . -B build -DOPENAI_HTTP_BACKEND=OPENAI_BACKEND_LWIP
+cmake --build build --parallel 10
 ```
 
-OPENAI_HTTP_BACKEND 是 CMake 选项，支持 OPENAI_BACKEND_BOTH（默认）、OPENAI_BACKEND_CURL 和 OPENAI_BACKEND_LWIP。
+OPENAI_HTTP_BACKEND 是 CMake 选项，支持 OPENAI_BACKEND_CURL（默认）、OPENAI_BACKEND_BOTH 和 OPENAI_BACKEND_LWIP。
 
 **注意**：ARM Cortex-M 平台需要在 `third_party/mbedtls/tf-psa-crypto/include/psa/crypto_config.h` 中禁用 `MBEDTLS_HAVE_ASM`（寄存器不足）。
 
@@ -134,15 +140,19 @@ OPENAI_HTTP_BACKEND 是 CMake 选项，支持 OPENAI_BACKEND_BOTH（默认）、
 
 ```bash
 # libcurl 后端（默认）
-cmake ..
-make
+cmake -S . -B build
+cmake --build build --parallel 10
 
 # lwIP 后端
-cmake .. -DOPENAI_HTTP_BACKEND=OPENAI_BACKEND_LWIP
-make
+cmake -S . -B build -DOPENAI_HTTP_BACKEND=OPENAI_BACKEND_LWIP
+cmake --build build --parallel 10
+
+# 使用 bundled libcurl 构建示例
+cmake -S . -B build -DOPENAI_BUILD_EXAMPLES=ON
+cmake --build build --parallel 10
 ```
 
-OPENAI_HTTP_BACKEND 是 CMake 选项，支持 OPENAI_BACKEND_BOTH（默认）、OPENAI_BACKEND_CURL 和 OPENAI_BACKEND_LWIP。
+OPENAI_HTTP_BACKEND 是 CMake 选项，支持 OPENAI_BACKEND_CURL（默认）、OPENAI_BACKEND_BOTH 和 OPENAI_BACKEND_LWIP。
 
 ## 配置
 
@@ -163,7 +173,7 @@ OpenAI_Client* client = openai_client_new("sk-...");
 
 // 准备聊天请求
 OpenAI_ChatRequest req = {0};
-req.model = "gpt-3.5-turbo";
+req.model = "gpt-4o-mini";
 req.messages = malloc(sizeof(OpenAI_Message) * 2);
 req.messages[0].role = "system";
 req.messages[0].content = "你是一个有帮助的助手。";
@@ -197,7 +207,7 @@ openai_client_set_provider(client, OPENAI_PROVIDER_ANTHROPIC);
 
 // 与 OpenAI 相同的 API - system prompt 会自动提取
 OpenAI_ChatRequest req = {0};
-req.model = "claude-3-opus-20240229";
+req.model = "claude-sonnet-4-20250514";
 req.messages = malloc(sizeof(OpenAI_Message) * 2);
 req.messages[0].role = "system";
 req.messages[0].content = "你是一个有帮助的助手。";
@@ -331,6 +341,7 @@ openai_client_set_base_url(client, "https://your-proxy.com/v1");
 ## 错误处理
 
 错误码：
+
 - `OPENAI_OK` - 成功
 - `OPENAI_ERR_INVALID_PARAM` - 无效参数
 - `OPENAI_ERR_MEMORY` - 内存分配失败
@@ -375,7 +386,7 @@ if (!resp) {
 
 本库包含以下安全增强：
 
-1. **JSON 注入防护**：`openai_json_escape_string()` 函数转义特殊字符（`"`、`\`、`/`、`\n`、`\r`、`\t`），在嵌入用户内容时防止 JSON 注入攻击。适用于 Chat Completions 和 Embeddings 请求中的 model、role 和 content 字段。
+1. **JSON 注入防护**：`openai_json_escape_string()` 函数转义特殊字符（`"`、`\`、`\n`、`\r`、`\t`），在嵌入用户内容时防止 JSON 注入攻击。适用于 Chat Completions 和 Embeddings 请求中的 model、role 和 content 字段。
 
 2. **内存安全**：所有 `malloc()`、`calloc()` 和 `realloc()` 调用都包含 NULL 指针检查，防止分配失败时崩溃。
 
@@ -383,13 +394,14 @@ if (!resp) {
 
 4. **缓冲区溢出保护**：动态缓冲区扩展在写入前进行正确的大小检查，`snprintf` 偏移量计算也经过验证。
 
-5. **lwIP 后端流式请求支持**：libcurl 和 lwIP 后端均支持流式（SSE）请求。lwIP 后端持续读取直到连接关闭（不依赖 Content-Length），可在嵌入式设备上正确处理 SSE 事件流。
+5. **SSE 事件解析**：两个后端均先缓冲完整 HTTP 响应，再由 `openai_stream_read()` 逐条返回 SSE 事件。API 不会实时交付网络数据，内存占用随完整响应大小增长。
 
 ## 平台说明
 
 ### Linux / 树莓派
 
 所有依赖库均通过 git submodule 集成。克隆时需：
+
 ```bash
 git clone --recursive https://github.com/Limx1994/c_openai.git
 # 或如果已经克隆：
@@ -401,9 +413,8 @@ git submodule update --init --recursive
 ```bash
 git clone --recursive https://github.com/Limx1994/c_openai.git
 cd c_openai
-mkdir build && cd build
-cmake .. -G "MSYS Makefiles"
-make
+cmake -S . -B build -G "MSYS Makefiles"
+cmake --build build --parallel 10
 ```
 
 ### STM32 / 嵌入式
@@ -411,6 +422,7 @@ make
 1. 将 lwIP 添加到项目中
 2. 配置 `OPENAI_HTTP_BACKEND=OPENAI_BACKEND_LWIP`
 3. 如需 HTTPS 支持，在 `lwipopts.h` 中启用 ALTCP + mbedTLS：
+
    ```c
    #define LWIP_ALTCP             1
    #define LWIP_ALTCP_TLS         1
@@ -425,17 +437,19 @@ CC BY-NC 4.0（Creative Commons 署名-非商业性使用 4.0 国际许可证）
 您可以将本软件用于**非商业目的**。
 
 **允许**：
+
 - ✅ 复制和分享本作品
 - ✅ 修改和演绎本作品
 
 **要求**：
+
 - 📋 署名：必须注明原作者
 
 **禁止**：
+
 - ❌ 任何形式的商业使用
 
 如需商业使用，请联系作者获取单独授权。
 
 完整许可证内容请参阅 [LICENSE](LICENSE) 文件或访问：
-https://creativecommons.org/licenses/by-nc/4.0/deed.zh-hans
-
+<https://creativecommons.org/licenses/by-nc/4.0/deed.zh-hans>
