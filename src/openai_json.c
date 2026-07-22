@@ -14,7 +14,14 @@ static const char* openai_json_skip_space(const char* p) {
     return p;
 }
 
+static int openai_json_is_hex(char c) {
+    return (c >= '0' && c <= '9') ||
+           (c >= 'a' && c <= 'f') ||
+           (c >= 'A' && c <= 'F');
+}
+
 static const char* openai_json_parse_string(const char* p, char** out) {
+    const char* start = p;
     if (*p != '"') {
         *out = NULL;
         return p;
@@ -26,28 +33,32 @@ static const char* openai_json_parse_string(const char* p, char** out) {
     size_t unescaped_len = 0;
     while (*scan && *scan != '"') {
         if (*scan == '\\') {
-            scan++;
-            if (*scan == '\0') break;
-            /* Escaped char counts as 1 (except \\ and \uXXXX) */
-            if (*scan == 'u') {
-                /* Check if we have at least 4 more characters for \uXXXX */
-                if (*(scan+1) != '\0' && *(scan+2) != '\0' &&
-                    *(scan+3) != '\0' && *(scan+4) != '\0') {
-                    unescaped_len += 6; /* \uXXXX outputs: \, u, + 4 hex digits */
-                    scan += 4;
-                } else {
-                    /* Malformed \u escape, count as-is */
-                    unescaped_len += 2;
-                    scan++;  /* advance past 'u' to avoid double-counting */
+            char escaped = scan[1];
+            if (escaped == '\0') {
+                *out = NULL;
+                return start;
+            }
+            if (escaped == 'u') {
+                for (int i = 0; i < 4; i++) {
+                    if (!openai_json_is_hex(scan[2 + i])) {
+                        *out = NULL;
+                        return start;
+                    }
                 }
+                unescaped_len += 6; /* Preserve \uXXXX as-is. */
+                scan += 6;
             } else {
                 unescaped_len++;
-                scan++;
+                scan += 2;
             }
         } else {
             unescaped_len++;
             scan++;
         }
+    }
+    if (*scan != '"') {
+        *out = NULL;
+        return start;
     }
 
     /* Second pass: copy and unescape */
@@ -72,12 +83,9 @@ static const char* openai_json_parse_string(const char* p, char** out) {
                 case 'b':  *out_ptr++ = '\b'; break;
                 case 'f':  *out_ptr++ = '\f'; break;
                 case 'u':  /* \uXXXX - copy as-is for simplicity */
-                    *out_ptr++ = '\\';
-                    *out_ptr++ = 'u';
-                    for (int i = 0; i < 4 && *(p+1) != '\0'; i++) {
-                        p++;
-                        *out_ptr++ = *p;
-                    }
+                    memcpy(out_ptr, p - 1, 6);
+                    out_ptr += 6;
+                    p += 4;
                     break;
                 default:   *out_ptr++ = *p;   break;
             }

@@ -824,10 +824,12 @@ void openai_chat_response_free(OpenAI_ChatResponse* resp) {
 
 /* Streaming support */
 typedef struct {
+    OpenAI_HTTPStream* http_stream;
     char* buffer;
     size_t buffer_size;
-    size_t buffer_pos;
+    size_t buffer_capacity;
     size_t parse_pos;
+    int transport_eof;
     int eof;
     int provider;           /* OpenAI_Provider value */
     char current_event[64]; /* For Anthropic: tracks current event: line */
@@ -946,6 +948,38 @@ static size_t find_line_end(const char* buffer, size_t size, size_t start) {
     return size;
 }
 
+static int stream_fill_buffer(OpenAI_StreamHandle* handle) {
+    if (handle->parse_pos > 0) {
+        size_t remaining = handle->buffer_size - handle->parse_pos;
+        if (remaining > 0) {
+            memmove(handle->buffer, handle->buffer + handle->parse_pos, remaining);
+        }
+        handle->buffer_size = remaining;
+        handle->parse_pos = 0;
+    }
+
+    if (handle->buffer_size == handle->buffer_capacity) {
+        if (handle->buffer_capacity >= 65536) return OPENAI_ERR_MEMORY;
+        size_t new_capacity = handle->buffer_capacity * 2;
+        if (new_capacity > 65536) new_capacity = 65536;
+        char* new_buffer = (char*)realloc(handle->buffer, new_capacity);
+        if (!new_buffer) return OPENAI_ERR_MEMORY;
+        handle->buffer = new_buffer;
+        handle->buffer_capacity = new_capacity;
+    }
+
+    int received = openai_http_stream_read(handle->http_stream,
+        handle->buffer + handle->buffer_size,
+        handle->buffer_capacity - handle->buffer_size);
+    if (received < 0) return OPENAI_ERR_NETWORK;
+    if (received == 0) {
+        handle->transport_eof = 1;
+        return OPENAI_ERR_EOF;
+    }
+    handle->buffer_size += (size_t)received;
+    return OPENAI_OK;
+}
+
 void* openai_chat_create_stream(OpenAI_Client* client, OpenAI_ChatRequest* req) {
     if (!client || !req) return NULL;
 
@@ -998,41 +1032,44 @@ void* openai_chat_create_stream(OpenAI_Client* client, OpenAI_ChatRequest* req) 
         http_req.extra_headers = "anthropic-version: 2023-06-01\r\n";
     }
 
-    OpenAI_HTTPResponse* http_resp = openai_http_request_stream(&http_req);
+    int status_code = 0;
+    OpenAI_HTTPStream* http_stream = openai_http_stream_open(&http_req, &status_code);
     free(body);
 
-    if (!http_resp) {
+    if (!http_stream) {
         OPENAI_LOG_ERROR("Streaming HTTP request failed");
         client->last_error = OPENAI_ERR_NETWORK;
         return NULL;
     }
 
-    if (http_resp->status_code != 200) {
-        OPENAI_LOG_ERROR("Streaming API error: status_code=%ld, body=%.200s",
-            (long)http_resp->status_code,
-            http_resp->body ? http_resp->body : "(null)");
-        set_http_error(client, http_resp->status_code);
-        openai_http_response_free(http_resp);
+    if (status_code != 200) {
+        OPENAI_LOG_ERROR("Streaming API error: status_code=%ld", (long)status_code);
+        set_http_error(client, status_code);
+        openai_http_stream_close(http_stream);
         return NULL;
     }
 
     OpenAI_StreamHandle* handle = (OpenAI_StreamHandle*)calloc(1, sizeof(OpenAI_StreamHandle));
     if (!handle) {
         OPENAI_LOG_ERROR("Failed to allocate stream handle");
-        openai_http_response_free(http_resp);
+        openai_http_stream_close(http_stream);
         return NULL;
     }
 
-    handle->buffer = http_resp->body;
-    handle->buffer_size = http_resp->body_size;
-    handle->buffer_pos = 0;
+    handle->buffer_capacity = 4096;
+    handle->buffer = (char*)malloc(handle->buffer_capacity);
+    if (!handle->buffer) {
+        openai_http_stream_close(http_stream);
+        free(handle);
+        client->last_error = OPENAI_ERR_MEMORY;
+        return NULL;
+    }
+    handle->http_stream = http_stream;
+    handle->buffer_size = 0;
     handle->parse_pos = 0;
     handle->eof = 0;
     handle->provider = client->provider;
     handle->current_event[0] = '\0';
-
-    /* Clean up http_resp struct but NOT the body (transferred to handle) */
-    free(http_resp);
 
     return handle;
 }
@@ -1048,9 +1085,33 @@ int openai_stream_read(void* stream, OpenAI_StreamEvent* event) {
 
     memset(event, 0, sizeof(OpenAI_StreamEvent));
 
-    while (handle->parse_pos < handle->buffer_size) {
+    while (!handle->eof) {
+        if (handle->parse_pos >= handle->buffer_size) {
+            if (handle->transport_eof) {
+                handle->eof = 1;
+                return OPENAI_ERR_EOF;
+            }
+            int fill_result = stream_fill_buffer(handle);
+            if (fill_result != OPENAI_OK && fill_result != OPENAI_ERR_EOF) {
+                return fill_result;
+            }
+            if (handle->buffer_size == 0 && handle->transport_eof) {
+                handle->eof = 1;
+                return OPENAI_ERR_EOF;
+            }
+        }
+
         size_t line_start = find_line_start(handle->buffer, handle->buffer_size, handle->parse_pos);
         size_t line_end = find_line_end(handle->buffer, handle->buffer_size, line_start);
+
+        if (line_end == handle->buffer_size && !handle->transport_eof) {
+            handle->parse_pos = line_start;
+            int fill_result = stream_fill_buffer(handle);
+            if (fill_result != OPENAI_OK && fill_result != OPENAI_ERR_EOF) {
+                return fill_result;
+            }
+            continue;
+        }
 
         size_t line_len = line_end - line_start;
 
@@ -1260,12 +1321,13 @@ int openai_stream_read(void* stream, OpenAI_StreamEvent* event) {
         }
     }
 
-    return OPENAI_ERR_BUFFER_EMPTY;
+    return OPENAI_ERR_EOF;
 }
 
 void openai_stream_close(void* stream) {
     if (stream) {
         OpenAI_StreamHandle* handle = (OpenAI_StreamHandle*)stream;
+        if (handle->http_stream) openai_http_stream_close(handle->http_stream);
         if (handle->buffer) free(handle->buffer);
         if (handle->current_role) free(handle->current_role);
         free(handle);

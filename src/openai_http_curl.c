@@ -14,6 +14,21 @@ struct memory_chunk {
     size_t capacity;
 };
 
+#define OPENAI_STREAM_BUFFER_SIZE 65536
+
+struct OpenAI_HTTPStream {
+    CURL* easy;
+    CURLM* multi;
+    struct curl_slist* headers;
+    char* buffer;
+    size_t size;
+    size_t pos;
+    int header_complete;
+    int done;
+    int failed;
+    int paused;
+};
+
 static size_t write_callback(void* contents, size_t size, size_t nmemb, void* userp) {
     size_t realsize = size * nmemb;
     struct memory_chunk* mem = (struct memory_chunk*)userp;
@@ -100,7 +115,7 @@ static OpenAI_HTTPResponse* do_curl_request(OpenAI_HTTPRequest* req, int is_stre
         curl_easy_setopt(curl, CURLOPT_POST, 1L);
         if (req->body && req->body_size > 0) {
             curl_easy_setopt(curl, CURLOPT_POSTFIELDS, req->body);
-            curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, req->body_size);
+            curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, (long)req->body_size);
         }
     }
 
@@ -189,4 +204,185 @@ void openai_http_response_free(OpenAI_HTTPResponse* resp) {
         if (resp->body) free(resp->body);
         free(resp);
     }
+}
+
+static size_t stream_header_callback(char* data, size_t size, size_t nmemb, void* userp) {
+    size_t length = size * nmemb;
+    OpenAI_HTTPStream* stream = (OpenAI_HTTPStream*)userp;
+    if (length == 2 && data[0] == '\r' && data[1] == '\n') {
+        stream->header_complete = 1;
+    }
+    return length;
+}
+
+static size_t stream_body_callback(void* contents, size_t size, size_t nmemb, void* userp) {
+    size_t length = size * nmemb;
+    OpenAI_HTTPStream* stream = (OpenAI_HTTPStream*)userp;
+
+    if (stream->pos > 0 && stream->pos == stream->size) {
+        stream->pos = 0;
+        stream->size = 0;
+    } else if (stream->pos > 0) {
+        memmove(stream->buffer, stream->buffer + stream->pos, stream->size - stream->pos);
+        stream->size -= stream->pos;
+        stream->pos = 0;
+    }
+
+    if (length > OPENAI_STREAM_BUFFER_SIZE - stream->size) {
+        stream->paused = 1;
+        return CURL_WRITEFUNC_PAUSE;
+    }
+
+    memcpy(stream->buffer + stream->size, contents, length);
+    stream->size += length;
+    return length;
+}
+
+static int stream_check_messages(OpenAI_HTTPStream* stream) {
+    int pending = 0;
+    CURLMsg* message;
+    while ((message = curl_multi_info_read(stream->multi, &pending)) != NULL) {
+        if (message->msg == CURLMSG_DONE) {
+            stream->done = 1;
+            if (message->data.result != CURLE_OK) {
+                OPENAI_LOG_ERROR("stream transfer failed: %s",
+                                 curl_easy_strerror(message->data.result));
+                stream->failed = 1;
+            }
+        }
+    }
+    return stream->failed ? -1 : 0;
+}
+
+static int stream_pump(OpenAI_HTTPStream* stream) {
+    int running = 0;
+    CURLMcode code = curl_multi_perform(stream->multi, &running);
+    if (code != CURLM_OK) {
+        OPENAI_LOG_ERROR("curl_multi_perform failed: %s", curl_multi_strerror(code));
+        stream->failed = 1;
+        return -1;
+    }
+    if (stream_check_messages(stream) != 0) return -1;
+    if (!stream->done && stream->size == stream->pos && !stream->header_complete) {
+        code = curl_multi_poll(stream->multi, NULL, 0, 1000, NULL);
+        if (code != CURLM_OK) {
+            OPENAI_LOG_ERROR("curl_multi_poll failed: %s", curl_multi_strerror(code));
+            stream->failed = 1;
+            return -1;
+        }
+    }
+    return 0;
+}
+
+OpenAI_HTTPStream* openai_http_stream_open(OpenAI_HTTPRequest* req, int* status_code) {
+    if (!req || !req->url || !status_code) return NULL;
+
+    OpenAI_HTTPStream* stream = (OpenAI_HTTPStream*)calloc(1, sizeof(OpenAI_HTTPStream));
+    if (!stream) return NULL;
+    stream->buffer = (char*)malloc(OPENAI_STREAM_BUFFER_SIZE);
+    stream->easy = curl_easy_init();
+    stream->multi = curl_multi_init();
+    if (!stream->buffer || !stream->easy || !stream->multi) {
+        openai_http_stream_close(stream);
+        return NULL;
+    }
+
+    stream->headers = curl_slist_append(stream->headers, "Content-Type: application/json");
+    stream->headers = curl_slist_append(stream->headers, "Accept: text/event-stream");
+    if (req->auth_header) {
+        char auth_header[512];
+        snprintf(auth_header, sizeof(auth_header), req->auth_mode == 1 ?
+                 "x-api-key: %s" : "Authorization: Bearer %s", req->auth_header);
+        stream->headers = curl_slist_append(stream->headers, auth_header);
+    }
+    if (req->extra_headers) {
+        const char* p = req->extra_headers;
+        while (*p) {
+            const char* line_end = strstr(p, "\r\n");
+            size_t line_len = line_end ? (size_t)(line_end - p) : strlen(p);
+            if (line_len > 0) {
+                char* header = (char*)malloc(line_len + 1);
+                if (!header) {
+                    openai_http_stream_close(stream);
+                    return NULL;
+                }
+                memcpy(header, p, line_len);
+                header[line_len] = '\0';
+                stream->headers = curl_slist_append(stream->headers, header);
+                free(header);
+            }
+            if (!line_end) break;
+            p = line_end + 2;
+        }
+    }
+
+    curl_easy_setopt(stream->easy, CURLOPT_URL, req->url);
+    curl_easy_setopt(stream->easy, CURLOPT_POST, 1L);
+    curl_easy_setopt(stream->easy, CURLOPT_POSTFIELDSIZE, (long)req->body_size);
+    curl_easy_setopt(stream->easy, CURLOPT_COPYPOSTFIELDS, req->body ? req->body : "");
+    curl_easy_setopt(stream->easy, CURLOPT_HTTPHEADER, stream->headers);
+    curl_easy_setopt(stream->easy, CURLOPT_HEADERFUNCTION, stream_header_callback);
+    curl_easy_setopt(stream->easy, CURLOPT_HEADERDATA, stream);
+    curl_easy_setopt(stream->easy, CURLOPT_WRITEFUNCTION, stream_body_callback);
+    curl_easy_setopt(stream->easy, CURLOPT_WRITEDATA, stream);
+    curl_easy_setopt(stream->easy, CURLOPT_CONNECTTIMEOUT, (long)OPENAI_TIMEOUT);
+    curl_easy_setopt(stream->easy, CURLOPT_LOW_SPEED_LIMIT, 1L);
+    curl_easy_setopt(stream->easy, CURLOPT_LOW_SPEED_TIME, (long)OPENAI_TIMEOUT);
+    curl_easy_setopt(stream->easy, CURLOPT_FOLLOWLOCATION, 1L);
+
+    if (curl_multi_add_handle(stream->multi, stream->easy) != CURLM_OK) {
+        openai_http_stream_close(stream);
+        return NULL;
+    }
+
+    while (!stream->header_complete && !stream->done) {
+        if (stream_pump(stream) != 0) {
+            openai_http_stream_close(stream);
+            return NULL;
+        }
+    }
+    if (!stream->header_complete || stream->failed) {
+        openai_http_stream_close(stream);
+        return NULL;
+    }
+
+    long response_code = 0;
+    curl_easy_getinfo(stream->easy, CURLINFO_RESPONSE_CODE, &response_code);
+    *status_code = (int)response_code;
+    return stream;
+}
+
+int openai_http_stream_read(OpenAI_HTTPStream* stream, void* buffer, size_t size) {
+    if (!stream || !buffer || size == 0) return -1;
+
+    while (stream->pos == stream->size && !stream->done) {
+        stream->pos = 0;
+        stream->size = 0;
+        if (stream->paused) {
+            stream->paused = 0;
+            if (curl_easy_pause(stream->easy, CURLPAUSE_CONT) != CURLE_OK) return -1;
+        }
+        if (stream_pump(stream) != 0) return -1;
+        if (!stream->done && stream->pos == stream->size) {
+            CURLMcode code = curl_multi_poll(stream->multi, NULL, 0, 1000, NULL);
+            if (code != CURLM_OK) return -1;
+        }
+    }
+
+    if (stream->pos == stream->size) return stream->failed ? -1 : 0;
+    size_t available = stream->size - stream->pos;
+    size_t count = size < available ? size : available;
+    memcpy(buffer, stream->buffer + stream->pos, count);
+    stream->pos += count;
+    return (int)count;
+}
+
+void openai_http_stream_close(OpenAI_HTTPStream* stream) {
+    if (!stream) return;
+    if (stream->multi && stream->easy) curl_multi_remove_handle(stream->multi, stream->easy);
+    if (stream->easy) curl_easy_cleanup(stream->easy);
+    if (stream->multi) curl_multi_cleanup(stream->multi);
+    if (stream->headers) curl_slist_free_all(stream->headers);
+    free(stream->buffer);
+    free(stream);
 }

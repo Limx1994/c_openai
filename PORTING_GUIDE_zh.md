@@ -29,7 +29,7 @@
 C-OpenAI 是一个 C 语言实现的 OpenAI/Anthropic API 客户端库，支持以下功能：
 
 - **Chat Completions** — 同步聊天请求
-- **Streaming** — SSE 事件流（先缓冲完整响应，再逐条解析）
+- **Streaming** — 增量读取并解析 SSE 事件流
 - **Embeddings** — 向量嵌入请求
 - **双后端** — libcurl（PC/服务器）和 lwIP（嵌入式）
 - **双 Provider** — OpenAI 和 Anthropic
@@ -60,7 +60,7 @@ C-OpenAI 是一个 C 语言实现的 OpenAI/Anthropic API 客户端库，支持�
 └─────────────────────────────────────────┘
 ```
 
-> **流式支持说明**：`openai_http_request_stream()` 在无 Content-Length 时持续读取直到连接关闭，不再依赖 Content-Length 头。后端会先缓冲完整响应，再由 `openai_stream_read()` 逐条返回 SSE 事件；它不会实时交付网络数据。
+> **流式支持说明**：`openai_chat_create_stream()` 在响应头到达后返回，`openai_stream_read()` 按需驱动后端并增量解析 SSE 事件。传输缓冲区有固定上限，单条未完成 SSE 行最大为 64 KiB。
 
 ---
 
@@ -964,11 +964,11 @@ void streaming_example(void)
 }
 ```
 
-> **流式注意事项**：当前实现会先**缓冲完整响应**，再逐条解析返回。这意味着：
+> **流式注意事项**：当前实现会增量读取并解析事件。这意味着：
 >
-> - `openai_chat_create_stream()` 会阻塞直到收到完整响应
-> - `openai_stream_read()` 是非阻塞的（从缓冲区读取）
-> - 在嵌入式环境中，大响应可能消耗较多 RAM
+> - `openai_chat_create_stream()` 在收到 HTTP 响应头后返回
+> - `openai_stream_read()` 会等待下一条完整 SSE 事件或流结束
+> - 空闲传输使用 `OPENAI_TIMEOUT` 超时，单条未完成 SSE 行最大为 64 KiB
 
 ### 11.4 Extended Thinking（扩展思考）
 
@@ -1138,7 +1138,7 @@ ESP-IDF 自带 lwIP 和 mbedTLS，**无需使用项目子模块**：
 | lwIP 栈（`MEM_SIZE`） | 8-32 KB（可配）           |
 | mbedTLS 会话         | 30-60 KB（每连接）         |
 | HTTP 请求缓冲          | 1-4 KB                |
-| HTTP 响应缓冲          | 4-64 KB（取决于 API 响应大小） |
+| HTTP 响应缓冲          | 4-64 KB（流式缓冲有固定上限） |
 | JSON 解析树           | 2-8 KB                |
 | openai 响应结构        | 1-4 KB                |
 | **合计（单次请求）**       | **~50-120 KB**        |
@@ -1158,7 +1158,7 @@ ESP-IDF 自带 lwIP 和 mbedTLS，**无需使用项目子模块**：
 1. **单客户端限制** — 同一时刻只能存在一个 `OpenAI_Client` 实例（全局计数器控制）
 2. **非线程安全** — lwIP 后端使用静态全局变量，不支持多线程并发请求
 3. **无连接复用** — 每次请求都新建 TCP 连接，无 HTTP Keep-Alive
-4. **流式请求** — 两个后端均先缓冲完整响应，再逐条解析 SSE 事件；内存占用随响应大小增长
+4. **流式行长度限制** — 单条未结束的 SSE 行最大为 64 KiB，超过限制会返回错误
 5. **无重试机制** — 请求失败不会自动重试
 6. **无代理支持** — lwIP 后端不支持 HTTP 代理
 7. **DNS 无缓存** — 每次请求都做 DNS 查询
