@@ -209,7 +209,7 @@ OpenAI_ChatResponse* resp = openai_chat_create(client, &req);
 - 内存 NULL 检查缺失（已添加）
 - lwIP 后端流式请求缺失（已实现）
 
-当前已知限制包括：Streaming API 会先缓冲完整 HTTP 响应，lwIP 后端不支持并发请求，且静态缓冲区内存模式尚未实现。
+当前已知限制包括：单条未完成 SSE 行最大为 64 KiB，lwIP 后端不支持并发请求，且静态缓冲区内存模式尚未实现。
 
 ## 已修复问题
 
@@ -280,3 +280,7 @@ OpenAI_ChatResponse* resp = openai_chat_create(client, &req);
 63. **usage 字符串解析死代码分支** - `openai_client.c` 中 OpenAI usage 解析先尝试 `openai_json_get_string`（永远返回 NULL），再用 `openai_json_get_number`。已修复，删除死代码分支。
 64. **TODO 注释已过时** - `openai_http_curl.c` 和 `openai_http_lwip.c` 中的 TODO 注释声称 HTTP 状态码映射未实现，但已在 `openai_client.c` 中实现。已在后端重写中清除。
 65. **Anthropic Extended Thinking 支持** - 新增 `thinking_enabled` 和 `thinking_budget` 请求参数，支持 Anthropic Extended Thinking 功能。响应中 `OpenAI_Choice.thinking` 字段包含 thinking 内容，流式事件中 `OpenAI_StreamEvent.thinking` 字段包含 thinking delta。同时修复非流式响应未提取 `stop_reason` 的问题。
+66. **畸形 Unicode escape 导致堆越界写** - `openai_json_parse_string()` 的长度计算与复制逻辑对不完整 `\uXXXX` 处理不一致。已统一两遍扫描规则，严格验证四位十六进制字符并安全拒绝畸形输入。
+67. **lwIP HTTPS 在握手完成前发送请求** - ALTCP 连接使用空 callback 并立即调用 `altcp_write()`。已注册连接和错误 callback，等待 TCP/TLS ready 后再发送请求。
+68. **Streaming 先缓冲完整响应** - curl 和 lwIP 后端此前等待完整响应后才创建 stream handle。已新增增量 HTTP stream 接口，按需读取 SSE，传输缓冲区有界，单条未完成 SSE 行限制为 64 KiB。
+69. **lwIP 接收 busy-spin** - RTOS 配置下等待数据时没有让出执行权。已在连接和接收等待循环中加入 `sys_msleep(1)`，同时保留超时与 `sys_check_timeouts()` 驱动。

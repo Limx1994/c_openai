@@ -30,6 +30,8 @@ typedef struct {
     size_t body_size;    /**< Body size in bytes */
 } OpenAI_HTTPResponse;
 
+typedef struct OpenAI_HTTPStream OpenAI_HTTPStream;
+
 /**
  * @brief Initialize HTTP subsystem (not thread-safe, call once before use)
  * @return 0 on success
@@ -54,6 +56,25 @@ OpenAI_HTTPResponse* openai_http_request(OpenAI_HTTPRequest* req);
  * @return Response handle with body, or NULL on failure
  */
 OpenAI_HTTPResponse* openai_http_request_stream(OpenAI_HTTPRequest* req);
+
+/**
+ * @brief Open an incremental HTTP response stream
+ * @param req HTTP request parameters
+ * @param status_code Receives the HTTP status code after response headers arrive
+ * @return Stream handle, or NULL on connection/protocol failure
+ */
+OpenAI_HTTPStream* openai_http_stream_open(OpenAI_HTTPRequest* req, int* status_code);
+
+/**
+ * @brief Read response-body bytes from an incremental HTTP stream
+ * @return Number of bytes read, 0 on EOF, or -1 on error/timeout
+ */
+int openai_http_stream_read(OpenAI_HTTPStream* stream, void* buffer, size_t size);
+
+/**
+ * @brief Close an incremental HTTP stream and release transport resources
+ */
+void openai_http_stream_close(OpenAI_HTTPStream* stream);
 
 /**
  * @brief Free HTTP response

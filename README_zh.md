@@ -324,6 +324,10 @@ openai_client_set_base_url(client, "https://your-proxy.com/v1");
 | `openai_stream_event_free(event)` | 释放事件的 content/role/stop_reason/thinking 字段 |
 | `openai_stream_close(stream)` | 关闭流并释放资源 |
 
+流式响应会增量交付。`openai_chat_create_stream()` 在收到响应头后返回，
+`openai_stream_read()` 等待并解析下一条 SSE 事件。传输层使用
+`OPENAI_TIMEOUT` 作为空闲超时，单条未完成 SSE 行最大为 64 KiB。
+
 ### JSON 工具
 
 | 函数 | 描述 |
@@ -394,7 +398,7 @@ if (!resp) {
 
 4. **缓冲区溢出保护**：动态缓冲区扩展在写入前进行正确的大小检查，`snprintf` 偏移量计算也经过验证。
 
-5. **SSE 事件解析**：两个后端均先缓冲完整 HTTP 响应，再由 `openai_stream_read()` 逐条返回 SSE 事件。API 不会实时交付网络数据，内存占用随完整响应大小增长。
+5. **增量 SSE 解析**：两个后端都会增量交付 SSE 数据。传输缓冲区有固定上限，未完成的单条 SSE 行限制为 64 KiB，空闲流会在 `OPENAI_TIMEOUT` 后以网络错误结束。
 
 ## 平台说明
 

@@ -328,6 +328,11 @@ openai_client_set_base_url(client, "https://your-proxy.com/v1");
 | `openai_stream_event_free(event)`        | Free event content/role/stop_reason/thinking fields |
 | `openai_stream_close(stream)`            | Close stream and free resources            |
 
+Streaming responses are delivered incrementally. `openai_chat_create_stream()`
+returns after the response headers arrive, and `openai_stream_read()` waits for
+and parses the next SSE event. The transport applies `OPENAI_TIMEOUT` as an idle
+timeout. A single incomplete SSE line is limited to 64 KiB.
+
 ### JSON Utilities
 
 | Function                              | Description                                 |
@@ -398,7 +403,7 @@ This library includes several security enhancements:
 
 4. **Buffer Overflow Protection**: Dynamic buffer expansion includes proper size checks before writing, with overflow checks in `snprintf` offset calculations.
 
-5. **SSE Event Parsing**: Both backends buffer the complete HTTP response before `openai_stream_read()` returns individual SSE events. The API does not deliver network data incrementally and memory usage grows with the complete response size.
+5. **Incremental SSE Parsing**: Both backends deliver SSE data incrementally. Transport buffers are bounded, incomplete SSE lines are capped at 64 KiB, and idle streams terminate with a network error after `OPENAI_TIMEOUT`.
 
 ## Platform-Specific Notes
 
