@@ -1,4 +1,4 @@
-# C-OpenAI 嵌入式移植指南
+﻿# C-OpenAI 嵌入式移植指南
 
 本文档面向需要将 C-OpenAI 库移植到嵌入式平台（STM32、ESP32、RP2040 等 MCU）的开发者。
 
