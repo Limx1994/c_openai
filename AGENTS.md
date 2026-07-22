@@ -1,4 +1,4 @@
-# C-OpenAI: Cross-platform OpenAI/Anthropic API Client for MCU/POSIX
+﻿# C-OpenAI: Cross-platform OpenAI/Anthropic API Client for MCU/POSIX
 
 ## Context
 
