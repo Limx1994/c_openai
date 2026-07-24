@@ -401,7 +401,7 @@ This library includes several security enhancements:
 
 3. **Safe Auth Header Handling**: Authorization headers are only added when a valid API key is present, preventing "Bearer (null)" headers.
 
-4. **Buffer Overflow Protection**: Dynamic buffer expansion includes proper size checks before writing, with overflow checks in `snprintf` offset calculations.
+4. **Buffer Overflow Protection**: Dynamic buffer expansion includes proper size checks before writing, with `snprintf` return value validation (negative returns trigger cleanup and NULL return).
 
 5. **Incremental SSE Parsing**: Both backends deliver SSE data incrementally. Transport buffers are bounded, incomplete SSE lines are capped at 64 KiB, and idle streams terminate with a network error after `OPENAI_TIMEOUT`.
 

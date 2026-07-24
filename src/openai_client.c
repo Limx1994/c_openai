@@ -148,6 +148,10 @@ static char* build_chat_request_body(OpenAI_ChatRequest* req) {
     char* escaped_model = openai_json_escape_string(req->model ? req->model : "gpt-4o-mini");
     int offset = snprintf(buf, buf_size,
         "{\"model\":\"%s\",\"messages\":[", escaped_model ? escaped_model : "gpt-4o-mini");
+    if (offset < 0 || (size_t)offset >= buf_size) {
+        free(buf);
+        return NULL;
+    }
     free(escaped_model);
 
     int first_msg = 1;
@@ -177,6 +181,12 @@ static char* build_chat_request_body(OpenAI_ChatRequest* req) {
             "%s{\"role\":\"%s\",\"content\":\"%s\"}",
             first_msg ? "" : ",", escaped_role ? escaped_role : msg->role,
             escaped_content ? escaped_content : msg->content);
+        if (written < 0) {
+            free(escaped_content);
+            free(escaped_role);
+            free(buf);
+            return NULL;
+        }
         offset += written;
         first_msg = 0;
         free(escaped_content);
@@ -320,6 +330,10 @@ static char* build_anthropic_request_body(OpenAI_ChatRequest* req) {
         "{\"model\":\"%s\",\"max_tokens\":%d",
         escaped_model ? escaped_model : "claude-sonnet-4-20250514",
         req->max_tokens > 0 ? req->max_tokens : 4096);
+    if (offset < 0 || (size_t)offset >= buf_size) {
+        free(buf);
+        return NULL;
+    }
     free(escaped_model);
 
     /* Add system field if present */
@@ -331,11 +345,16 @@ static char* build_anthropic_request_body(OpenAI_ChatRequest* req) {
             buf = new_buf;
         }
         offset += snprintf(buf + offset, buf_size - offset, ",\"system\":\"%s\"", system_content);
+        if (offset < 0) { free(system_content); free(buf); return NULL; }
         free(system_content);
     }
 
     /* Add messages array (non-system only) */
-    offset += snprintf(buf + offset, buf_size - offset, ",\"messages\":[");
+    {
+        int w = snprintf(buf + offset, buf_size - offset, ",\"messages\":[");
+        if (w < 0 || (size_t)(offset + w) >= buf_size) { free(buf); return NULL; }
+        offset += w;
+    }
     int first_non_system = 1;
     for (size_t i = 0; i < req->message_count && req->messages; i++) {
         OpenAI_Message* msg = &req->messages[i];
@@ -354,15 +373,19 @@ static char* build_anthropic_request_body(OpenAI_ChatRequest* req) {
             }
             buf = new_buf;
         }
-        int written = snprintf(buf + offset, buf_size - offset,
-            "%s{\"role\":\"%s\",\"content\":\"%s\"}",
-            first_non_system ? "" : ",",
-            escaped_role ? escaped_role : msg->role,
-            escaped_content ? escaped_content : msg->content);
-        if (written > 0) offset += written;
-        first_non_system = 0;
-        free(escaped_content);
-        free(escaped_role);
+    int written = snprintf(buf + offset, buf_size - offset,
+        "%s{\"role\":\"%s\",\"content\":\"%s\"}",
+        first_non_system ? "" : ",",
+        escaped_role ? escaped_role : msg->role,
+        escaped_content ? escaped_content : msg->content);
+    if (written < 0) {
+        free(escaped_content); free(escaped_role); free(buf);
+        return NULL;
+    }
+    offset += written;
+    first_non_system = 0;
+    free(escaped_content);
+    free(escaped_role);
     }
     offset += snprintf(buf + offset, buf_size - offset, "]");
 
@@ -523,7 +546,16 @@ static OpenAI_ChatResponse* parse_anthropic_response(OpenAI_JSONNode* json) {
     resp->choice_count = 1;
     resp->choices = (OpenAI_Choice*)calloc(1, sizeof(OpenAI_Choice));
     if (!resp->choices) {
+        free(resp->id);
+        free(resp->model);
+        free(resp->object);
+        free(resp->usage);
+        resp->id = NULL;
+        resp->model = NULL;
+        resp->object = NULL;
+        resp->usage = NULL;
         resp->choice_count = 0;
+        return resp;
     }
     if (resp->choices) {
         /* Extract thinking blocks */

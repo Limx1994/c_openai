@@ -284,3 +284,5 @@ OpenAI_ChatResponse* resp = openai_chat_create(client, &req);
 67. **lwIP HTTPS 在握手完成前发送请求** - ALTCP 连接使用空 callback 并立即调用 `altcp_write()`。已注册连接和错误 callback，等待 TCP/TLS ready 后再发送请求。
 68. **Streaming 先缓冲完整响应** - curl 和 lwIP 后端此前等待完整响应后才创建 stream handle。已新增增量 HTTP stream 接口，按需读取 SSE，传输缓冲区有界，单条未完成 SSE 行限制为 64 KiB。
 69. **lwIP 接收 busy-spin** - RTOS 配置下等待数据时没有让出执行权。已在连接和接收等待循环中加入 `sys_msleep(1)`，同时保留超时与 `sys_check_timeouts()` 驱动。
+70. **snprintf 负返回值未检查（MEDIUM）** - `build_chat_request_body` 和 `build_anthropic_request_body` 中 `snprintf` 返回值未检查，编码错误时返回 -1 导致 `offset` 变为负值，后续 `snprintf(buf + offset, ...)` 向缓冲区前部越界写入。已修复，对所有 `snprintf` 调用检查返回值，为负时释放已分配资源并返回 NULL。
+71. **calloc 失败时已分配字段泄漏（MEDIUM）** - `parse_anthropic_response` 中按顺序分配 `id`/`model`/`object`/`choices`，`calloc(choices)` 失败时前三个字段已分配但无法释放。已修复，在 `calloc` 失败路径清理所有已分配字段并将 `choice_count` 置 0。
