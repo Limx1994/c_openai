@@ -408,7 +408,7 @@ static int serialize_append(char** buf, size_t* buf_size, size_t* offset, const 
     return 0;
 }
 
-static int serialize_node(OpenAI_JSONNode* node, char** buf, size_t* buf_size, size_t* offset);
+static int serialize_node(OpenAI_JSONNode* node, char** buf, size_t* buf_size, size_t* offset, int depth);
 
 char* openai_json_serialize(OpenAI_JSONNode* node) {
     if (!node) return NULL;
@@ -419,15 +419,17 @@ char* openai_json_serialize(OpenAI_JSONNode* node) {
     if (!buf) return NULL;
     buf[0] = '\0';
 
-    if (serialize_node(node, &buf, &buf_size, &offset) != 0) {
+    if (serialize_node(node, &buf, &buf_size, &offset, 0) != 0) {
         free(buf);
         return NULL;
     }
     return buf;
 }
 
-static int serialize_node(OpenAI_JSONNode* node, char** buf, size_t* buf_size, size_t* offset) {
+static int serialize_node(OpenAI_JSONNode* node, char** buf, size_t* buf_size, size_t* offset, int depth) {
     if (!node) return 0;
+
+    if (depth > OPENAI_JSON_MAX_DEPTH) return -1;
 
     if (node->is_object) {
         if (serialize_append(buf, buf_size, offset, "{", 1) != 0) return -1;
@@ -447,7 +449,7 @@ static int serialize_node(OpenAI_JSONNode* node, char** buf, size_t* buf_size, s
                 free(escaped_key);
             }
             /* Value */
-            if (serialize_node(child, buf, buf_size, offset) != 0) return -1;
+            if (serialize_node(child, buf, buf_size, offset, depth + 1) != 0) return -1;
         }
         if (serialize_append(buf, buf_size, offset, "}", 1) != 0) return -1;
     } else if (node->is_array) {
@@ -458,7 +460,7 @@ static int serialize_node(OpenAI_JSONNode* node, char** buf, size_t* buf_size, s
                 if (serialize_append(buf, buf_size, offset, ",", 1) != 0) return -1;
             }
             first = 0;
-            if (serialize_node(child, buf, buf_size, offset) != 0) return -1;
+            if (serialize_node(child, buf, buf_size, offset, depth + 1) != 0) return -1;
         }
         if (serialize_append(buf, buf_size, offset, "]", 1) != 0) return -1;
     } else if (node->string_value) {
