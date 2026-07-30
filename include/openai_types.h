@@ -76,6 +76,10 @@ typedef struct {
 
 /* Stream event types */
 #define OPENAI_EVENT_CHUNK "chat.completion.chunk"
+#define OPENAI_EVENT_TOOL_CALL_DELTA "chat.completion.tool_call_delta"
+#define OPENAI_EVENT_TOOL_USE_START "content_block.tool_use.start"
+#define OPENAI_EVENT_TOOL_USE_DELTA "content_block.tool_use.delta"
+#define OPENAI_EVENT_TOOL_USE_STOP  "content_block.tool_use.stop"
 
 /**
  * @brief Stream event structure
