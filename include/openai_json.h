@@ -8,6 +8,10 @@
 
 #include <stddef.h>
 
+#ifndef OPENAI_JSON_MAX_DEPTH
+#define OPENAI_JSON_MAX_DEPTH 64
+#endif
+
 /* JSON node for DOM-style parsing */
 struct OpenAI_JSONNode {
     char* key;
