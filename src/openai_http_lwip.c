@@ -329,11 +329,29 @@ static int send_all_tcp(int sock, const char* data, size_t len) {
 /* Build HTTP request header string. Caller must free(). */
 static char* build_http_header(OpenAI_HTTPRequest* req, const char* host,
                                 const char* path, const char* accept_type) {
+    size_t host_len = strlen(host);
+    size_t path_len = strlen(path);
     size_t auth_len = req->auth_header ? strlen(req->auth_header) : 0;
-    size_t extra_len = req->extra_headers ? strlen(req->extra_headers) : 0;
+
+    /* Initial capacity overflow protection */
+    if (host_len > SIZE_MAX - path_len ||
+        host_len + path_len > SIZE_MAX - 64) {
+        return NULL;
+    }
+
+    size_t extra_len = host_len + path_len + 64;
+
+    if (auth_len > SIZE_MAX - extra_len ||
+        auth_len + extra_len > SIZE_MAX - 512) {
+        return NULL;
+    }
+
     size_t header_size = 512 + auth_len + extra_len;
     char* header = (char*)malloc(header_size);
     if (!header) return NULL;
+
+    int ret;
+    size_t needed;
 
     if (req->auth_header) {
         char auth_line[512];
@@ -342,7 +360,7 @@ static char* build_http_header(OpenAI_HTTPRequest* req, const char* host,
         } else {
             snprintf(auth_line, sizeof(auth_line), "Authorization: Bearer %s\r\n", req->auth_header);
         }
-        snprintf(header, header_size,
+        ret = snprintf(header, header_size,
             "POST %s HTTP/1.1\r\n"
             "Host: %s\r\n"
             "%s"
@@ -355,7 +373,7 @@ static char* build_http_header(OpenAI_HTTPRequest* req, const char* host,
             req->extra_headers ? req->extra_headers : "",
             req->body ? req->body_size : 0);
     } else {
-        snprintf(header, header_size,
+        ret = snprintf(header, header_size,
             "POST %s HTTP/1.1\r\n"
             "Host: %s\r\n"
             "Content-Type: application/json\r\n"
@@ -366,6 +384,58 @@ static char* build_http_header(OpenAI_HTTPRequest* req, const char* host,
             path, host, accept_type,
             req->extra_headers ? req->extra_headers : "",
             req->body ? req->body_size : 0);
+    }
+
+    if (ret < 0) {
+        free(header);
+        return NULL;  /* Encoding error */
+    }
+    if ((uintmax_t)ret >= (uintmax_t)SIZE_MAX) {
+        free(header);
+        return NULL;  /* Extreme integer overflow */
+    }
+    needed = (size_t)ret + 1;
+    if (needed > header_size) {
+        char* new_header = (char*)realloc(header, needed);
+        if (!new_header) { free(header); return NULL; }
+        header = new_header;
+
+        if (req->auth_header) {
+            char auth_line[512];
+            if (req->auth_mode == 1) {
+                snprintf(auth_line, sizeof(auth_line), "x-api-key: %s\r\n", req->auth_header);
+            } else {
+                snprintf(auth_line, sizeof(auth_line), "Authorization: Bearer %s\r\n", req->auth_header);
+            }
+            ret = snprintf(header, needed,
+                "POST %s HTTP/1.1\r\n"
+                "Host: %s\r\n"
+                "%s"
+                "Content-Type: application/json\r\n"
+                "Accept: %s\r\n"
+                "%s"
+                "Content-Length: %zu\r\n"
+                "\r\n",
+                path, host, auth_line, accept_type,
+                req->extra_headers ? req->extra_headers : "",
+                req->body ? req->body_size : 0);
+        } else {
+            ret = snprintf(header, needed,
+                "POST %s HTTP/1.1\r\n"
+                "Host: %s\r\n"
+                "Content-Type: application/json\r\n"
+                "Accept: %s\r\n"
+                "%s"
+                "Content-Length: %zu\r\n"
+                "\r\n",
+                path, host, accept_type,
+                req->extra_headers ? req->extra_headers : "",
+                req->body ? req->body_size : 0);
+        }
+        if (ret < 0 || (size_t)ret >= needed) {
+            free(header);
+            return NULL;
+        }
     }
     return header;
 }
@@ -482,6 +552,10 @@ static char* recv_response(recv_fn_t recv_fn, void* recv_arg, int is_stream,
     while (1) {
         /* Ensure space before reading */
         if (buf_size >= buf_capacity - 1) {
+            if (buf_capacity > SIZE_MAX / 2) {
+                free(buf);
+                return NULL;
+            }
             buf_capacity *= 2;
             char* new_buf = (char*)realloc(buf, buf_capacity);
             if (!new_buf) {
