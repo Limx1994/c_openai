@@ -132,8 +132,6 @@ cmake -S . -B build -DOPENAI_HTTP_BACKEND=OPENAI_BACKEND_LWIP
 cmake --build build --parallel 10
 ```
 
-OPENAI_HTTP_BACKEND 是 CMake 选项，支持 OPENAI_BACKEND_CURL（默认）、OPENAI_BACKEND_BOTH 和 OPENAI_BACKEND_LWIP。
-
 **注意**：ARM Cortex-M 平台需要在 `third_party/mbedtls/tf-psa-crypto/include/psa/crypto_config.h` 中禁用 `MBEDTLS_HAVE_ASM`（寄存器不足）。
 
 ### 构建选项
@@ -152,8 +150,6 @@ cmake -S . -B build -DOPENAI_BUILD_EXAMPLES=ON
 cmake --build build --parallel 10
 ```
 
-OPENAI_HTTP_BACKEND 是 CMake 选项，支持 OPENAI_BACKEND_CURL（默认）、OPENAI_BACKEND_BOTH 和 OPENAI_BACKEND_LWIP。
-
 ## 配置
 
 编辑 `include/openai_config.h` 进行自定义：
@@ -161,6 +157,12 @@ OPENAI_HTTP_BACKEND 是 CMake 选项，支持 OPENAI_BACKEND_CURL（默认）、
 ```c
 #define OPENAI_TIMEOUT 30          // HTTP 超时秒数
 #define OPENAI_USE_TLS 1           // lwIP HTTPS（需要 mbedTLS）
+```
+
+`OPENAI_JSON_MAX_DEPTH` 控制 JSON 序列化的最大嵌套深度（默认 64）。在包含 `openai_json.h` 前定义可覆盖：
+
+```c
+#define OPENAI_JSON_MAX_DEPTH 32   // 嵌入式平台可降低以节省栈空间
 ```
 
 ## 使用方法
@@ -324,6 +326,18 @@ openai_client_set_base_url(client, "https://your-proxy.com/v1");
 | `openai_stream_event_free(event)` | 释放事件的 content/role/stop_reason/thinking 字段 |
 | `openai_stream_close(stream)` | 关闭流并释放资源 |
 
+`event_type` 字段用于区分流式事件类型：
+
+| 常量 | 含义 |
+|------|------|
+| `OPENAI_EVENT_CHUNK` | 文本 delta（OpenAI 和 Anthropic 通用） |
+| `OPENAI_EVENT_TOOL_CALL_DELTA` | OpenAI `tool_calls` delta |
+| `OPENAI_EVENT_TOOL_USE_START` | Anthropic `tool_use` 块开始 |
+| `OPENAI_EVENT_TOOL_USE_DELTA` | Anthropic `tool_use` delta |
+| `OPENAI_EVENT_TOOL_USE_STOP` | Anthropic `tool_use` 块结束 |
+
+检查 `event->event_type` 来区分文本 delta、OpenAI tool_call delta 和 Anthropic tool_use 事件。`content` 对 tool_use 块保存 `partial_json`。
+
 流式响应会增量交付。`openai_chat_create_stream()` 在收到响应头后返回，
 `openai_stream_read()` 等待并解析下一条 SSE 事件。传输层使用
 `OPENAI_TIMEOUT` 作为空闲超时，单条未完成 SSE 行最大为 64 KiB。
@@ -358,6 +372,7 @@ openai_client_set_base_url(client, "https://your-proxy.com/v1");
 - `OPENAI_ERR_SERVER` - 服务器错误（HTTP 5xx）
 - `OPENAI_ERR_BUFFER_EMPTY` - 缓冲区为空（流式响应）
 - `OPENAI_ERR_EOF` - 流结束（流式响应）
+- `OPENAI_ERR_UNKNOWN` - 未知错误
 
 ### 错误查询
 
@@ -399,6 +414,8 @@ if (!resp) {
 4. **缓冲区溢出保护**：动态缓冲区扩展在写入前进行正确的大小检查，`snprintf` 返回值也经过验证（负返回值触发清理并返回 NULL）。
 
 5. **增量 SSE 解析**：两个后端都会增量交付 SSE 数据。传输缓冲区有固定上限，未完成的单条 SSE 行限制为 64 KiB，空闲流会在 `OPENAI_TIMEOUT` 后以网络错误结束。
+
+6. **lwIP 溢出保护**：`build_http_header()` 使用两遍 `snprintf` 并检测截断，SIZE_MAX 溢出检查保护缓冲区大小计算。`recv_response()` 在缓冲区倍增前检查 `SIZE_MAX/2` 防止整数溢出。`build_anthropic_request_body()` 在累积 system_content 前检查 SIZE_MAX。
 
 ## 平台说明
 

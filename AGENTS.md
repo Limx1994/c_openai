@@ -286,3 +286,8 @@ OpenAI_ChatResponse* resp = openai_chat_create(client, &req);
 69. **lwIP 接收 busy-spin** - RTOS 配置下等待数据时没有让出执行权。已在连接和接收等待循环中加入 `sys_msleep(1)`，同时保留超时与 `sys_check_timeouts()` 驱动。
 70. **snprintf 负返回值未检查（MEDIUM）** - `build_chat_request_body` 和 `build_anthropic_request_body` 中 `snprintf` 返回值未检查，编码错误时返回 -1 导致 `offset` 变为负值，后续 `snprintf(buf + offset, ...)` 向缓冲区前部越界写入。已修复，对所有 `snprintf` 调用检查返回值，为负时释放已分配资源并返回 NULL。
 71. **calloc 失败时已分配字段泄漏（MEDIUM）** - `parse_anthropic_response` 中按顺序分配 `id`/`model`/`object`/`choices`，`calloc(choices)` 失败时前三个字段已分配但无法释放。已修复，在 `calloc` 失败路径清理所有已分配字段并将 `choice_count` 置 0。
+72. **tool_call/tool_use 流式事件类型常量** - 新增 4 个流式事件类型常量（`OPENAI_EVENT_TOOL_CALL_DELTA`、`OPENAI_EVENT_TOOL_USE_START`、`OPENAI_EVENT_TOOL_USE_DELTA`、`OPENAI_EVENT_TOOL_USE_STOP`），支持 OpenAI tool_calls delta 和 Anthropic tool_use 三阶段事件（start/delta/stop）。已定义于 `openai_types.h`。
+73. **JSON 序列化深度限制** - `serialize_node()` 新增 `depth` 参数，超过 `OPENAI_JSON_MAX_DEPTH`（默认 64）时返回 -1，防止恶意深度嵌套 JSON 导致栈溢出。已定义于 `openai_json.h` 为可覆写宏。
+74. **SSE 解析改用 JSON DOM** - `parse_sse_line()` 完全重写为基于 JSON DOM 的解析，提取 `finish_reason`、`role`、`choice_index` 和 `tool_calls` 数组，取代此前的手动字符串扫描。OpenAI 非流式响应现在也提取 `message.tool_calls` 并序列化为 JSON 拼接到 content。
+75. **lwIP HTTP 头截断检测和 SIZE_MAX 溢出保护** - `build_http_header()` 改为两遍 `snprintf`，检测返回值与所需大小，SIZE_MAX 溢出检查保护缓冲区大小计算。`recv_response()` 在缓冲区倍增前检查 `SIZE_MAX/2` 防止整数溢出，内部循环增加 `realloc` NULL 检查。
+76. **Anthropic realloc SIZE_MAX 溢出保护** - `build_anthropic_request_body()` 的 system_content 累积在 `realloc` 前检查 SIZE_MAX 溢出，防止超长 system prompt 导致整数回绕。所有 `snprintf` 返回值统一检查负编码错误。

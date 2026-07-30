@@ -544,6 +544,11 @@ int mbedtls_hardware_poll(void *data, unsigned char *output,
 #define OPENAI_USE_TLS 1           /* 1=HTTPS（推荐）, 0=HTTP（不安全） */
 #endif
 
+/* ======================== JSON 序列化深度限制 ======================== */
+#ifndef OPENAI_JSON_MAX_DEPTH
+#define OPENAI_JSON_MAX_DEPTH 64   /* JSON 序列化最大嵌套深度，嵌入式可降低 */
+#endif
+
 /* ======================== API Base URL ======================== */
 /* 如需使用反向代理或私有端点，在此修改 */
 #if OPENAI_USE_TLS
