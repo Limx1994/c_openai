@@ -300,17 +300,29 @@ static char* build_anthropic_request_body(OpenAI_ChatRequest* req) {
             char* escaped = openai_json_escape_string(msg->content ? msg->content : "");
             size_t part_len = escaped ? strlen(escaped) : (msg->content ? strlen(msg->content) : 0);
             if (system_content) {
-                char* new_sys = (char*)realloc(system_content, system_len + part_len + 3);
-                if (new_sys) {
-                    system_content = new_sys;
-                    if (system_len > 0) {
-                        system_content[system_len++] = '\\';
-                        system_content[system_len++] = 'n';
+                /* SIZE_MAX overflow protection */
+                if (part_len > SIZE_MAX - 3 ||
+                    system_len > SIZE_MAX - part_len - 3) {
+                    OPENAI_LOG_ERROR("system_content size overflow: sys=%zu part=%zu", system_len, part_len);
+                    free(system_content);
+                    system_content = NULL;
+                } else {
+                    char* new_sys = (char*)realloc(system_content, system_len + part_len + 3);
+                    if (!new_sys) {
+                        OPENAI_LOG_ERROR("realloc system_content failed, need %zu bytes", system_len + part_len + 3);
+                        free(system_content);
+                        system_content = NULL;
+                    } else {
+                        system_content = new_sys;
+                        if (system_len > 0) {
+                            system_content[system_len++] = '\\';
+                            system_content[system_len++] = 'n';
+                            system_content[system_len] = '\0';
+                        }
+                        memcpy(system_content + system_len, escaped ? escaped : (msg->content ? msg->content : ""), part_len);
+                        system_len += part_len;
                         system_content[system_len] = '\0';
                     }
-                    memcpy(system_content + system_len, escaped ? escaped : (msg->content ? msg->content : ""), part_len);
-                    system_len += part_len;
-                    system_content[system_len] = '\0';
                 }
             } else {
                 system_content = (char*)malloc(part_len + 1);
@@ -855,6 +867,32 @@ void openai_chat_response_free(OpenAI_ChatResponse* resp) {
 }
 
 /* Streaming support */
+typedef enum {
+    SSE_PAYLOAD_NONE = 0,
+    SSE_PAYLOAD_TEXT,
+    SSE_PAYLOAD_TOOL_CALLS
+} SSEPayloadType;
+
+typedef struct {
+    SSEPayloadType payload_type;
+    char* payload;
+    char* finish_reason;
+    char* role;
+    int choice_index;
+} SSEParseResult;
+
+static void sse_parse_result_clear(SSEParseResult* result) {
+    if (!result) return;
+    free(result->payload);
+    free(result->finish_reason);
+    free(result->role);
+    result->payload = NULL;
+    result->finish_reason = NULL;
+    result->role = NULL;
+    result->payload_type = SSE_PAYLOAD_NONE;
+    result->choice_index = -1;
+}
+
 typedef struct {
     OpenAI_HTTPStream* http_stream;
     char* buffer;
@@ -868,63 +906,154 @@ typedef struct {
     char* current_role;     /* For Anthropic: current block role */
     int current_index;      /* For Anthropic: current block index */
     char current_block_type[32]; /* For Anthropic: "text" or "thinking" */
+    char* current_tool_id;  /* For Anthropic tool_use: current block id */
+    char* current_tool_name;/* For Anthropic tool_use: current block name */
 } OpenAI_StreamHandle;
 
-static int parse_sse_line(const char* line, size_t len, char* output, size_t output_size) {
+static int parse_sse_line(const char* data, size_t data_len, SSEParseResult* result) {
+    if (!result) return OPENAI_ERR_INVALID_PARAM;
+    memset(result, 0, sizeof(*result));
+    result->payload_type = SSE_PAYLOAD_NONE;
+    result->choice_index = -1;
+
     /* SSE format: "data: {\"key\": \"value\"}" */
-    if (len < 6 || strncmp(line, "data: ", 6) != 0) {
-        return -1;
+    if (data_len < 6 || strncmp(data, "data: ", 6) != 0) {
+        return OPENAI_ERR_EOF;
     }
-    line += 6;
-    len -= 6;
+    data += 6;
+    data_len -= 6;
 
     /* Check for [DONE] marker */
-    if (len >= 7 && strncmp(line, "[DONE]", 7) == 0) {
-        return 1;
+    if (data_len >= 7 && strncmp(data, "[DONE]", 7) == 0) {
+        return OPENAI_ERR_EOF;
     }
 
-    /* Parse the JSON to extract delta.content */
-    /* Safe approach: handle escaped quotes properly */
-    const char* content_start = strstr(line, "\"content\":\"");
-    if (content_start) {
-        content_start += 11; /* skip "\"content\":\"" */
+    /* Parse JSON payload */
+    char* json_str = (char*)malloc(data_len + 1);
+    if (!json_str) return OPENAI_ERR_MEMORY;
+    memcpy(json_str, data, data_len);
+    json_str[data_len] = '\0';
 
-        /* Find closing quote, handling escaped characters */
-        const char* p = content_start;
-        size_t content_len = 0;
+    OpenAI_JSONNode* root = openai_json_parse(json_str);
+    free(json_str);
+    if (!root) return OPENAI_ERR_PARSE;
 
-        while (*p && *p != '"' && content_len < output_size - 1) {
-            if (*p == '\\') {
-                p++;
-                if (*p == '\0') break;
-                if (*p == 'n') { output[content_len++] = '\n'; }
-                else if (*p == 't') { output[content_len++] = '\t'; }
-                else if (*p == 'r') { output[content_len++] = '\r'; }
-                else if (*p == '\\') { output[content_len++] = '\\'; }
-                else if (*p == '"') { output[content_len++] = '"'; }
-                else { output[content_len++] = *p; }
-                p++;
-            } else {
-                output[content_len++] = *p;
-                p++;
-            }
-        }
-        output[content_len] = '\0';
+    /* Get choices[0] */
+    OpenAI_JSONNode* choices = openai_json_get_object(root, "choices");
+    if (!choices || choices->child_count == 0) {
+        /* Usage-only chunk: no valid payload fields */
+        openai_json_free(root);
         return 0;
     }
-    return -1;
+
+    OpenAI_JSONNode* choice = openai_json_array_first(choices);
+
+    /* Extract choice index (must be integer) */
+    if (choice->is_number) {
+        result->choice_index = (int)choice->number_value;
+    } else {
+        /* index might be a sibling field; try to find it */
+        int found = 0;
+        for (OpenAI_JSONNode* c = choice; c; c = openai_json_array_next(c)) {
+            if (c->key && strcmp(c->key, "index") == 0 && c->is_number) {
+                result->choice_index = (int)c->number_value;
+                found = 1;
+                break;
+            }
+        }
+        if (!found) result->choice_index = 0;
+    }
+
+    /* Extract finish_reason (orthogonal to payload) */
+    const char* finish_reason = openai_json_get_string(choice, "finish_reason");
+    if (finish_reason) {
+        size_t fr_len = strlen(finish_reason);
+        result->finish_reason = (char*)malloc(fr_len + 1);
+        if (result->finish_reason) {
+            memcpy(result->finish_reason, finish_reason, fr_len + 1);
+        }
+    }
+
+    /* Extract delta object */
+    OpenAI_JSONNode* delta = openai_json_get_object(choice, "delta");
+    if (!delta) {
+        openai_json_free(root);
+        return 0;
+    }
+
+    /* Extract role from delta (always, never discard) */
+    const char* role = openai_json_get_string(delta, "role");
+    if (role) {
+        size_t role_len = strlen(role);
+        result->role = (char*)malloc(role_len + 1);
+        if (result->role) {
+            memcpy(result->role, role, role_len + 1);
+        }
+    }
+
+    /* Extract tool_calls (priority: TOOL_CALLS over TEXT) */
+    OpenAI_JSONNode* tool_calls = openai_json_get_object(delta, "tool_calls");
+    if (tool_calls && tool_calls->child_count > 0) {
+        /* Serialize the full delta object as payload */
+        OpenAI_JSONNode* delta_copy = openai_json_get_object(choice, "delta");
+        result->payload = openai_json_serialize(delta_copy);
+        result->payload_type = SSE_PAYLOAD_TOOL_CALLS;
+        openai_json_free(root);
+        return 0;
+    }
+
+    /* Extract text content */
+    const char* content = openai_json_get_string(delta, "content");
+    if (content && content[0] != '\0') {
+        size_t content_len = strlen(content);
+        result->payload = (char*)malloc(content_len + 1);
+        if (result->payload) {
+            memcpy(result->payload, content, content_len + 1);
+        }
+        result->payload_type = SSE_PAYLOAD_TEXT;
+    }
+
+    openai_json_free(root);
+    return 0;
 }
 
 static int parse_anthropic_sse_line(const char* data, size_t data_len,
                                      char* output, size_t output_size) {
     /* Anthropic SSE data: {"type":"content_block_delta","index":0,
-     * "delta":{"type":"text_delta","text":"..."}} */
+     * "delta":{"type":"text_delta","text":"..."}}
+     * or: {"delta":{"type":"input_json_delta","partial_json":"..."}} */
+    if (!data || data_len == 0 || !output || output_size == 0) return -1;
+
+    /* Try JSON parsing first */
+    char* json_str = (char*)malloc(data_len + 1);
+    if (!json_str) return -1;
+    memcpy(json_str, data, data_len);
+    json_str[data_len] = '\0';
+
+    OpenAI_JSONNode* root = openai_json_parse(json_str);
+    free(json_str);
+    if (!root) return -1;
+
+    /* Try delta.partial_json first (tool_use input_json_delta) */
+    OpenAI_JSONNode* delta = openai_json_get_object(root, "delta");
+    if (delta) {
+        const char* partial_json = openai_json_get_string(delta, "partial_json");
+        if (partial_json) {
+            size_t pj_len = strlen(partial_json);
+            if (pj_len >= output_size) pj_len = output_size - 1;
+            memcpy(output, partial_json, pj_len);
+            output[pj_len] = '\0';
+            openai_json_free(root);
+            return 0;
+        }
+    }
+
+    /* Fallback: text/thinking extraction (original logic) */
     const char* text_start = strstr(data, "\"thinking\":\"");
     if (!text_start) {
         text_start = strstr(data, "\"text\":\"");
     }
     if (!text_start) {
-        /* Also try delta.text format */
         const char* text_pattern = "\"delta\":{\"type\":\"text_delta\",\"text\":\"";
         text_start = strstr(data, text_pattern);
         if (text_start) text_start += strlen(text_pattern);
@@ -932,7 +1061,7 @@ static int parse_anthropic_sse_line(const char* data, size_t data_len,
             const char* thinking_pattern = "\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"";
             text_start = strstr(data, thinking_pattern);
             if (text_start) text_start += strlen(thinking_pattern);
-            else return -1;
+            else { openai_json_free(root); return -1; }
         }
     } else {
         text_start += (strncmp(text_start, "\"thinking\":\"", 12) == 0) ? 12 : 8;
@@ -957,6 +1086,7 @@ static int parse_anthropic_sse_line(const char* data, size_t data_len,
         }
     }
     output[content_len] = '\0';
+    openai_json_free(root);
     return 0;
 }
 
@@ -1165,6 +1295,20 @@ int openai_stream_read(void* stream, OpenAI_StreamEvent* event) {
                     size_t data_len = line_len - 6;
                     /* Check for message_stop */
                     if (strcmp(handle->current_event, "message_stop") == 0) {
+                        /* If there's an active block, protocol error */
+                        if (handle->current_block_type[0] != '\0') {
+                            OPENAI_LOG_ERROR("Anthropic: message_stop with active block");
+                            free(handle->current_tool_id);
+                            handle->current_tool_id = NULL;
+                            free(handle->current_tool_name);
+                            handle->current_tool_name = NULL;
+                            handle->current_block_type[0] = '\0';
+                            handle->current_index = -1;
+                            handle->parse_pos = line_end + 1;
+                            handle->eof = 1;
+                            free(line_buffer);
+                            return OPENAI_ERR_PARSE;
+                        }
                         handle->eof = 1;
                         free(line_buffer);
                         return OPENAI_ERR_EOF;
@@ -1188,24 +1332,135 @@ int openai_stream_read(void* stream, OpenAI_StreamEvent* event) {
                     }
                     /* Parse content_block_start for index and type */
                     if (strcmp(handle->current_event, "content_block_start") == 0) {
-                        const char* index_start = strstr(data_str, "\"index\":");
-                        if (index_start) {
-                            handle->current_index = atoi(index_start + 8);
+                        /* Check for active block (protocol error if exists) */
+                        if (handle->current_block_type[0] != '\0') {
+                            OPENAI_LOG_ERROR("Anthropic: new block_start without prior stop");
+                            handle->eof = 1;
+                            free(line_buffer);
+                            return OPENAI_ERR_PARSE;
                         }
-                        /* Extract block type: "text" or "thinking" */
-                        const char* type_start = strstr(data_str, "\"type\":\"");
-                        const char* content_block = strstr(data_str, "\"content_block\":");
-                        if (content_block) {
-                            type_start = strstr(content_block, "\"type\":\"");
+
+                        /* Parse JSON using DOM */
+                        OpenAI_JSONNode* root = NULL;
+                        char* serialized_json = NULL;
+                        char* block_type = NULL;
+                        int error_code = OPENAI_OK;
+
+                        root = openai_json_parse(data_str);
+                        if (!root) goto anthropic_block_error;
+
+                        /* Extract index */
+                        OpenAI_JSONNode* index_node = openai_json_get_object(root, "index");
+                        if (index_node && index_node->is_number) {
+                            handle->current_index = (int)index_node->number_value;
+                        } else {
+                            goto anthropic_block_error;
                         }
-                        if (type_start) {
-                            type_start += 8;
-                            const char* type_end = strchr(type_start, '"');
-                            if (type_end && (size_t)(type_end - type_start) < sizeof(handle->current_block_type)) {
-                                memcpy(handle->current_block_type, type_start, type_end - type_start);
-                                handle->current_block_type[type_end - type_start] = '\0';
+
+                        /* Extract content_block fields */
+                        OpenAI_JSONNode* cb = openai_json_get_object(root, "content_block");
+                        if (!cb) goto anthropic_block_error;
+
+                        const char* type = openai_json_get_string(cb, "type");
+                        if (!type || !type[0]) goto anthropic_block_error;
+
+                        /* Commit block type atomically */
+                        snprintf(handle->current_block_type, sizeof(handle->current_block_type), "%s", type);
+
+                        /* Handle tool_use: extract id and name atomically */
+                        if (strcmp(type, "tool_use") == 0) {
+                            const char* tool_id = openai_json_get_string(cb, "id");
+                            const char* tool_name = openai_json_get_string(cb, "name");
+                            if (!tool_id || !tool_name) goto anthropic_block_error;
+
+                            handle->current_tool_id = (char*)malloc(strlen(tool_id) + 1);
+                            handle->current_tool_name = (char*)malloc(strlen(tool_name) + 1);
+                            if (!handle->current_tool_id || !handle->current_tool_name) {
+                                OPENAI_LOG_ERROR("Anthropic tool_use: OOM allocating id/name");
+                                error_code = OPENAI_ERR_MEMORY;
+                                goto anthropic_block_error;
                             }
+                            strcpy(handle->current_tool_id, tool_id);
+                            strcpy(handle->current_tool_name, tool_name);
+
+                            /* Build START event content: {"index":N,"id":"...","name":"..."} */
+                            OpenAI_JSONNode* start_obj = (OpenAI_JSONNode*)calloc(1, sizeof(OpenAI_JSONNode));
+                            if (!start_obj) {
+                                error_code = OPENAI_ERR_MEMORY;
+                                goto anthropic_block_error;
+                            }
+                            /* index */
+                            start_obj->is_number = 1;
+                            start_obj->number_value = (double)handle->current_index;
+                            start_obj->key = (char*)malloc(strlen("index") + 1);
+                            if (!start_obj->key) { error_code = OPENAI_ERR_MEMORY; goto anthropic_block_error_obj; }
+                            strcpy(start_obj->key, "index");
+                            /* id */
+                            OpenAI_JSONNode* id_node = (OpenAI_JSONNode*)calloc(1, sizeof(OpenAI_JSONNode));
+                            if (!id_node) { error_code = OPENAI_ERR_MEMORY; goto anthropic_block_error_obj; }
+                            id_node->key = (char*)malloc(strlen("id") + 1);
+                            if (!id_node->key) { error_code = OPENAI_ERR_MEMORY; openai_json_free(id_node); goto anthropic_block_error_obj; }
+                            strcpy(id_node->key, "id");
+                            id_node->string_value = (char*)malloc(strlen(tool_id) + 1);
+                            if (!id_node->string_value) { error_code = OPENAI_ERR_MEMORY; openai_json_free(id_node); goto anthropic_block_error_obj; }
+                            strcpy(id_node->string_value, tool_id);
+                            id_node->next = start_obj->children;
+                            start_obj->children = id_node;
+                            start_obj->child_count++;
+                            /* name */
+                            OpenAI_JSONNode* name_node = (OpenAI_JSONNode*)calloc(1, sizeof(OpenAI_JSONNode));
+                            if (!name_node) { error_code = OPENAI_ERR_MEMORY; goto anthropic_block_error_obj; }
+                            name_node->key = (char*)malloc(strlen("name") + 1);
+                            if (!name_node->key) { error_code = OPENAI_ERR_MEMORY; openai_json_free(name_node); goto anthropic_block_error_obj; }
+                            strcpy(name_node->key, "name");
+                            name_node->string_value = (char*)malloc(strlen(tool_name) + 1);
+                            if (!name_node->string_value) { error_code = OPENAI_ERR_MEMORY; openai_json_free(name_node); goto anthropic_block_error_obj; }
+                            strcpy(name_node->string_value, tool_name);
+                            name_node->next = start_obj->children;
+                            start_obj->children = name_node;
+                            start_obj->child_count++;
+                            start_obj->is_object = 1;
+
+                            serialized_json = openai_json_serialize(start_obj);
+                            openai_json_free(start_obj);
+                            if (!serialized_json) {
+                                error_code = OPENAI_ERR_MEMORY;
+                                goto anthropic_block_error;
+                            }
+
+                            event->event_type = OPENAI_EVENT_TOOL_USE_START;
+                            event->content = serialized_json;
+                            serialized_json = NULL;
+                            event->index = handle->current_index;
+                            OPENAI_LOG_DEBUG("Anthropic tool_use: event=%s, idx=%d, id=%s",
+                                event->event_type, event->index,
+                                handle->current_tool_id ? handle->current_tool_id : "");
+                            handle->parse_pos = line_end + 1;
+                            if (handle->parse_pos < handle->buffer_size &&
+                                (handle->buffer[handle->parse_pos] == '\n' || handle->buffer[handle->parse_pos] == '\r')) {
+                                handle->parse_pos++;
+                            }
+                            free(line_buffer);
+                            openai_json_free(root);
+                            return 0;
+
+                        anthropic_block_error_obj:
+                            openai_json_free(start_obj);
                         }
+
+                    anthropic_block_error:
+                        if (error_code == OPENAI_OK) error_code = OPENAI_ERR_PARSE;
+                        OPENAI_LOG_ERROR("Anthropic block_start parse error");
+                        free(handle->current_tool_id); handle->current_tool_id = NULL;
+                        free(handle->current_tool_name); handle->current_tool_name = NULL;
+                        handle->current_block_type[0] = '\0';
+                        handle->current_index = -1;
+                        handle->parse_pos = line_end + 1;
+                        handle->eof = 1;
+                        free(line_buffer);
+                        openai_json_free(root);
+                        free(serialized_json);
+                        return error_code;
                     }
                     /* Parse message_delta for stop_reason */
                     if (strcmp(handle->current_event, "message_delta") == 0) {
@@ -1233,23 +1488,51 @@ int openai_stream_read(void* stream, OpenAI_StreamEvent* event) {
                     }
                     /* Parse content_block_delta */
                     if (strcmp(handle->current_event, "content_block_delta") == 0) {
+                        /* Read event's own index, validate against current */
+                        int incoming_index = -1;
+                        OpenAI_JSONNode* delta_root = openai_json_parse(data_str);
+                        if (delta_root) {
+                            OpenAI_JSONNode* idx_node = openai_json_get_object(delta_root, "index");
+                            if (idx_node && idx_node->is_number) {
+                                incoming_index = (int)idx_node->number_value;
+                            }
+                        }
+                        if (incoming_index != handle->current_index) {
+                            OPENAI_LOG_ERROR("Anthropic delta index mismatch: got=%d expected=%d",
+                                incoming_index, handle->current_index);
+                            openai_json_free(delta_root);
+                            free(line_buffer);
+                            handle->eof = 1;
+                            return OPENAI_ERR_PARSE;
+                        }
+
                         char* content = (char*)calloc(1, line_len + 1);
                         if (!content) {
+                            openai_json_free(delta_root);
                             free(line_buffer);
                             return OPENAI_ERR_MEMORY;
                         }
                         int ret = parse_anthropic_sse_line(data_str, data_len,
                                                            content, line_len + 1);
+                        openai_json_free(delta_root);
                         if (ret == 0 && content[0] != '\0') {
-                            /* Route to thinking or content based on block type */
-                            if (strcmp(handle->current_block_type, "thinking") == 0) {
+                            /* Route based on block type */
+                            if (strcmp(handle->current_block_type, "tool_use") == 0) {
+                                /* TOOL_USE_DELTA: partial_json */
+                                event->event_type = OPENAI_EVENT_TOOL_USE_DELTA;
+                                event->content = content;
+                                content = NULL;
+                                event->index = handle->current_index;
+                            } else if (strcmp(handle->current_block_type, "thinking") == 0) {
                                 event->thinking = (char*)malloc(strlen(content) + 1);
                                 if (event->thinking) strcpy(event->thinking, content);
+                                event->event_type = OPENAI_EVENT_CHUNK;
                             } else {
+                                /* text or other */
                                 event->content = (char*)malloc(strlen(content) + 1);
                                 if (event->content) strcpy(event->content, content);
+                                event->event_type = OPENAI_EVENT_CHUNK;
                             }
-                            event->event_type = OPENAI_EVENT_CHUNK;
                             /* Fill role/index from saved handle state */
                             if (handle->current_role) {
                                 event->role = (char*)malloc(strlen(handle->current_role) + 1);
@@ -1267,81 +1550,124 @@ int openai_stream_read(void* stream, OpenAI_StreamEvent* event) {
                         }
                         free(content);
                     }
+                    /* Parse content_block_stop */
+                    if (strcmp(handle->current_event, "content_block_stop") == 0) {
+                        /* Read event's own index, validate against current */
+                        int incoming_index = -1;
+                        OpenAI_JSONNode* stop_root = openai_json_parse(data_str);
+                        if (stop_root) {
+                            OpenAI_JSONNode* idx_node = openai_json_get_object(stop_root, "index");
+                            if (idx_node && idx_node->is_number) {
+                                incoming_index = (int)idx_node->number_value;
+                            }
+                        }
+                        if (incoming_index != handle->current_index) {
+                            OPENAI_LOG_ERROR("Anthropic stop index mismatch: got=%d expected=%d",
+                                incoming_index, handle->current_index);
+                            openai_json_free(stop_root);
+                            free(line_buffer);
+                            handle->eof = 1;
+                            return OPENAI_ERR_PARSE;
+                        }
+
+                        /* If tool_use block, emit TOOL_USE_STOP event */
+                        if (strcmp(handle->current_block_type, "tool_use") == 0) {
+                            OPENAI_LOG_DEBUG("Anthropic tool_use: event=%s, idx=%d, id=%s",
+                                OPENAI_EVENT_TOOL_USE_STOP, handle->current_index,
+                                handle->current_tool_id ? handle->current_tool_id : "");
+                            event->event_type = OPENAI_EVENT_TOOL_USE_STOP;
+                            event->index = handle->current_index;
+                            handle->parse_pos = line_end + 1;
+                            if (handle->parse_pos < handle->buffer_size &&
+                                (handle->buffer[handle->parse_pos] == '\n' || handle->buffer[handle->parse_pos] == '\r')) {
+                                handle->parse_pos++;
+                            }
+                            openai_json_free(stop_root);
+                            free(line_buffer);
+                            /* Clear block state after event construction */
+                            free(handle->current_tool_id);
+                            handle->current_tool_id = NULL;
+                            free(handle->current_tool_name);
+                            handle->current_tool_name = NULL;
+                            handle->current_block_type[0] = '\0';
+                            handle->current_index = -1;
+                            return 0;
+                        }
+
+                        /* All block types: clear state */
+                        free(handle->current_tool_id);
+                        handle->current_tool_id = NULL;
+                        free(handle->current_tool_name);
+                        handle->current_tool_name = NULL;
+                        handle->current_block_type[0] = '\0';
+                        handle->current_index = -1;
+                        openai_json_free(stop_root);
+                    }
                 }
                 /* Skip empty lines and non-data lines for Anthropic */
             } else {
                 /* OpenAI SSE parsing */
-                char* content = (char*)calloc(1, line_len + 1);
-                if (!content) {
-                    free(line_buffer);
-                    return OPENAI_ERR_MEMORY;
-                }
-                int ret = parse_sse_line(line_buffer, line_len, content, line_len + 1);
-
-            if (ret == 1) {
-                handle->eof = 1;
-                free(content);
-                free(line_buffer);
-                return OPENAI_ERR_EOF;
-            } else if (ret == 0 && content[0] != '\0') {
-                event->content = (char*)malloc(strlen(content) + 1);
-                if (event->content) strcpy(event->content, content);
-                event->event_type = OPENAI_EVENT_CHUNK;
-
-                /* Parse role from line_buffer */
-                const char* role_start = strstr(line_buffer, "\"role\":\"");
-                if (role_start) {
-                    role_start += 8;
-                    const char* role_end = strstr(role_start, "\"");
-                    if (role_end && (size_t)(role_end - role_start) < 64) {
-                        event->role = (char*)malloc(role_end - role_start + 1);
-                        if (event->role) {
-                            memcpy(event->role, role_start, role_end - role_start);
-                            event->role[role_end - role_start] = '\0';
-                        }
+                SSEParseResult result;
+                memset(&result, 0, sizeof(result));
+                int parse_ret = parse_sse_line(line_buffer, line_len, &result);
+                if (parse_ret != 0) {
+                    sse_parse_result_clear(&result);
+                } else if (result.payload_type == SSE_PAYLOAD_NONE &&
+                           result.finish_reason == NULL &&
+                           result.role == NULL) {
+                    /* Usage-only chunk or empty delta: no event to expose */
+                    sse_parse_result_clear(&result);
+                } else if (result.payload_type == SSE_PAYLOAD_NONE &&
+                           result.finish_reason == NULL &&
+                           result.role != NULL) {
+                    /* Role-only event */
+                    event->event_type = OPENAI_EVENT_CHUNK;
+                    event->role = result.role;
+                    result.role = NULL;
+                    event->index = result.choice_index;
+                    OPENAI_LOG_DEBUG("OpenAI stream: payload_type=NONE, role-only");
+                    handle->parse_pos = line_end + 1;
+                    if (handle->parse_pos < handle->buffer_size &&
+                        (handle->buffer[handle->parse_pos] == '\n' || handle->buffer[handle->parse_pos] == '\r')) {
+                        handle->parse_pos++;
                     }
-                }
-
-                /* Parse index from line_buffer */
-                const char* index_start = strstr(line_buffer, "\"index\":");
-                if (index_start) {
-                    event->index = atoi(index_start + 8);
-                }
-
+                    free(line_buffer);
+                    sse_parse_result_clear(&result);
+                    return 0;
+                } else if (result.payload_type == SSE_PAYLOAD_NONE &&
+                           result.finish_reason != NULL) {
+                    /* Finish reason only (delta empty) */
+                    event->event_type = OPENAI_EVENT_CHUNK;
+                    event->stop_reason = result.finish_reason;
+                    result.finish_reason = NULL;
+                    event->index = result.choice_index;
+                    OPENAI_LOG_DEBUG("OpenAI stream: payload_type=NONE, finish_reason=%s", event->stop_reason);
                 handle->parse_pos = line_end + 1;
                 if (handle->parse_pos < handle->buffer_size &&
                     (handle->buffer[handle->parse_pos] == '\n' || handle->buffer[handle->parse_pos] == '\r')) {
                     handle->parse_pos++;
                 }
-                free(content);
                 free(line_buffer);
                 return 0;
-            } else if (ret == -1) {
-                /* No content found, check for finish_reason */
-                const char* finish_start = strstr(line_buffer, "\"finish_reason\":\"");
-                if (finish_start) {
-                    finish_start += 17; /* skip "\"finish_reason\":\"" */
-                    const char* finish_end = strchr(finish_start, '"');
-                    if (finish_end) {
-                        size_t finish_len = finish_end - finish_start;
-                        event->stop_reason = (char*)malloc(finish_len + 1);
-                        if (event->stop_reason) {
-                            memcpy(event->stop_reason, finish_start, finish_len);
-                            event->stop_reason[finish_len] = '\0';
-                        }
-                        event->event_type = OPENAI_EVENT_CHUNK;
-                        handle->parse_pos = line_end + 1;
-                        if (handle->parse_pos < handle->buffer_size &&
-                            (handle->buffer[handle->parse_pos] == '\n' || handle->buffer[handle->parse_pos] == '\r')) {
-                            handle->parse_pos++;
-                        }
-                        free(content);
-                        free(line_buffer);
-                        return 0;
-                    }
+            } else {
+                /* TEXT or TOOL_CALLS payload */
+                event->event_type = (result.payload_type == SSE_PAYLOAD_TOOL_CALLS)
+                    ? OPENAI_EVENT_TOOL_CALL_DELTA : OPENAI_EVENT_CHUNK;
+                event->content = result.payload;
+                result.payload = NULL;
+                event->stop_reason = result.finish_reason;
+                result.finish_reason = NULL;
+                event->index = result.choice_index;
+                OPENAI_LOG_DEBUG("OpenAI stream: payload_type=%d, event_type=%s",
+                    result.payload_type, event->event_type);
+                handle->parse_pos = line_end + 1;
+                if (handle->parse_pos < handle->buffer_size &&
+                    (handle->buffer[handle->parse_pos] == '\n' || handle->buffer[handle->parse_pos] == '\r')) {
+                    handle->parse_pos++;
                 }
+                free(line_buffer);
+                return 0;
             }
-            free(content);
             } /* end else (OpenAI) */
             free(line_buffer);
         }
@@ -1362,6 +1688,8 @@ void openai_stream_close(void* stream) {
         if (handle->http_stream) openai_http_stream_close(handle->http_stream);
         if (handle->buffer) free(handle->buffer);
         if (handle->current_role) free(handle->current_role);
+        if (handle->current_tool_id) free(handle->current_tool_id);
+        if (handle->current_tool_name) free(handle->current_tool_name);
         free(handle);
     }
 }
