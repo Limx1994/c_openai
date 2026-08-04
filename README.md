@@ -173,6 +173,13 @@ Configure CMake and edit `include/openai_config.h` to customize:
 `OPENAI_BACKEND_CURL` (default), `OPENAI_BACKEND_BOTH`, and
 `OPENAI_BACKEND_LWIP`.
 
+Logging is controlled by compile-time macros:
+
+```c
+#define OPENAI_LOG_ENABLED 1       // 0=disable all logging (recommended for embedded)
+#define OPENAI_LOG_LEVEL 3         // 0=error, 1=warn, 2=info, 3=debug
+```
+
 ## Usage
 
 ```c

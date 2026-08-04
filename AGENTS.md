@@ -81,7 +81,13 @@ openai_config.h 中可配置：
 
 ### 后端切换
 
-后端通过 CMake 变量 `OPENAI_HTTP_BACKEND` 选择（在 CMakeLists.txt 中配置），默认为 libcurl。
+后端通过 CMake 变量 `OPENAI_HTTP_BACKEND` 选择，支持三个值：
+
+- `OPENAI_BACKEND_CURL`（默认）— libcurl 后端
+- `OPENAI_BACKEND_LWIP` — lwIP 后端
+- `OPENAI_BACKEND_BOTH` — 同时编译两个后端
+
+在 CMakeLists.txt 中配置，或在命令行中指定：
 
 ## API 接口设计
 
@@ -120,6 +126,17 @@ OpenAI_JSONNode* openai_json_array_next(OpenAI_JSONNode* current);  // 数组迭
 // openai_config.h
 #define OPENAI_TIMEOUT 30          // 超时秒数
 #define OPENAI_USE_TLS 1           // lwIP HTTPS（需启用 LWIP_ALTCP_TLS_MBEDTLS）
+
+// 在包含 openai_json.h 前定义可覆写 JSON 序列化深度限制
+#define OPENAI_JSON_MAX_DEPTH 64   // 默认 64，嵌入式可降低（如 32）以节省栈空间
+```
+
+日志通过编译宏控制，默认开启（`OPENAI_LOG_ENABLED=1`），级别 0-3：
+
+```c
+// openai_config.h
+#define OPENAI_LOG_ENABLED 1       // 0=关闭所有日志，嵌入式建议设为 0
+#define OPENAI_LOG_LEVEL 3         // 0=error, 1=warn, 2=info, 3=debug
 ```
 
 ## Anthropic Messages API 支持
@@ -194,10 +211,11 @@ OpenAI_ChatResponse* resp = openai_chat_create(client, &req);
 
 ## 验证方法
 
-1. **一键编译**：`python build.py`（自动检测 ARM 工具链，编译 lwIP 后端）
-2. **CMake 编译**：`cmake -S . -B build && cmake --build build --parallel 10`
-3. **功能测试**：运行示例程序调用真实 API
-4. **嵌入式测试**：在 STM32/Raspberry Pi Pico 等平台编译验证
+1. **libcurl 编译**：`bash build.sh`（MinGW/MSYS2）
+2. **lwIP 编译**：`bash build_lwip.sh`（ARM GCC，自动检测 STM32CubeIDE 工具链）
+3. **CMake 编译**：`cmake -S . -B build && cmake --build build --parallel 10`
+4. **功能测试**：运行示例程序调用真实 API
+5. **嵌入式测试**：在 STM32/Raspberry Pi Pico 等平台编译验证
 
 ## 已知问题
 
