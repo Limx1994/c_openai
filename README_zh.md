@@ -145,7 +145,11 @@ cmake --build build --parallel 10
 cmake -S . -B build -DOPENAI_HTTP_BACKEND=OPENAI_BACKEND_LWIP
 cmake --build build --parallel 10
 
-# 使用 bundled libcurl 构建示例
+# 同时编译两个后端
+cmake -S . -B build -DOPENAI_HTTP_BACKEND=OPENAI_BACKEND_BOTH
+cmake --build build --parallel 10
+
+# 编译示例程序
 cmake -S . -B build -DOPENAI_BUILD_EXAMPLES=ON
 cmake --build build --parallel 10
 ```
@@ -163,6 +167,13 @@ cmake --build build --parallel 10
 
 ```c
 #define OPENAI_JSON_MAX_DEPTH 32   // 嵌入式平台可降低以节省栈空间
+```
+
+日志通过编译宏控制：
+
+```c
+#define OPENAI_LOG_ENABLED 1       // 0=关闭所有日志（嵌入式建议设为 0）
+#define OPENAI_LOG_LEVEL 3         // 0=error, 1=warn, 2=info, 3=debug
 ```
 
 ## 使用方法

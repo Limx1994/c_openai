@@ -440,45 +440,6 @@ static char* build_http_header(OpenAI_HTTPRequest* req, const char* host,
     return header;
 }
 
-static char* decode_chunked_body(const char* body, size_t body_len, size_t* out_len) {
-    char* decoded = (char*)malloc(body_len + 1);
-    if (!decoded) return NULL;
-
-    size_t in_pos = 0;
-    size_t out_pos = 0;
-    while (in_pos < body_len) {
-        char* endptr = NULL;
-        unsigned long chunk_size = strtoul(body + in_pos, &endptr, 16);
-        if (endptr == body + in_pos) {
-            free(decoded);
-            return NULL;
-        }
-        while ((size_t)(endptr - body) < body_len && *endptr != '\n') endptr++;
-        if ((size_t)(endptr - body) >= body_len) {
-            free(decoded);
-            return NULL;
-        }
-        in_pos = (size_t)(endptr - body) + 1;
-        if (chunk_size == 0) {
-            decoded[out_pos] = '\0';
-            *out_len = out_pos;
-            return decoded;
-        }
-        if (chunk_size > body_len - in_pos) {
-            free(decoded);
-            return NULL;
-        }
-        memcpy(decoded + out_pos, body + in_pos, chunk_size);
-        out_pos += chunk_size;
-        in_pos += chunk_size;
-        if (in_pos < body_len && body[in_pos] == '\r') in_pos++;
-        if (in_pos < body_len && body[in_pos] == '\n') in_pos++;
-    }
-
-    free(decoded);
-    return NULL;
-}
-
 /* Parse HTTP response from raw buffer into OpenAI_HTTPResponse */
 static OpenAI_HTTPResponse* parse_http_response(char* buf, size_t buf_size) {
     OpenAI_HTTPResponse* resp = (OpenAI_HTTPResponse*)calloc(1, sizeof(OpenAI_HTTPResponse));
@@ -488,6 +449,8 @@ static OpenAI_HTTPResponse* parse_http_response(char* buf, size_t buf_size) {
 
     char* body_start = strstr(buf, "\r\n\r\n");
     if (body_start) {
+        body_start += 4;
+
         int is_chunked = 0;
         char* transfer_encoding = openai_strcasestr(buf, "transfer-encoding:");
         if (transfer_encoding && transfer_encoding < body_start &&
@@ -495,7 +458,6 @@ static OpenAI_HTTPResponse* parse_http_response(char* buf, size_t buf_size) {
             openai_strcasestr(transfer_encoding, "chunked") < body_start) {
             is_chunked = 1;
         }
-        body_start += 4;
 
         /* Parse status line */
         char* status_line = buf;
@@ -511,7 +473,27 @@ static OpenAI_HTTPResponse* parse_http_response(char* buf, size_t buf_size) {
 
         size_t body_len = buf_size - (size_t)(body_start - buf);
         if (is_chunked) {
-            resp->body = decode_chunked_body(body_start, body_len, &resp->body_size);
+            char* decoded = (char*)malloc(body_len + 1);
+            if (decoded) {
+                size_t out_len = 0;
+                size_t in_pos = 0;
+                while (in_pos < body_len) {
+                    char* endptr = NULL;
+                    unsigned long chunk_size = strtoul(body_start + in_pos, &endptr, 16);
+                    if (!endptr || endptr == body_start + in_pos) break;
+                    in_pos = (size_t)(endptr - body_start) + 1;
+                    if (chunk_size == 0) break;
+                    if (chunk_size > body_len - in_pos) break;
+                    if (out_len + chunk_size > body_len) break;
+                    memcpy(decoded + out_len, body_start + in_pos, chunk_size);
+                    out_len += chunk_size;
+                    in_pos += chunk_size;
+                    while (in_pos < body_len && body_start[in_pos] == '\r') in_pos++;
+                    while (in_pos < body_len && body_start[in_pos] == '\n') in_pos++;
+                }
+                resp->body = decoded;
+                resp->body_size = out_len;
+            }
         } else {
             resp->body = (char*)malloc(body_len + 1);
             if (resp->body) {

@@ -565,7 +565,7 @@ int mbedtls_hardware_poll(void *data, unsigned char *output,
 #endif
 
 #ifndef OPENAI_LOG_LEVEL
-#define OPENAI_LOG_LEVEL 0         /* 仅在开启日志时有效：0=error */
+#define OPENAI_LOG_LEVEL 0         /* 仅在开启日志时有效：0=error, 1=warn, 2=info, 3=debug */
 #endif
 
 #if OPENAI_LOG_ENABLED
@@ -633,8 +633,13 @@ cmake --build build --parallel 10
 **可覆盖的编译选项：**
 
 ```bash
-cmake -S . -B build -DOPENAI_HTTP_BACKEND=OPENAI_BACKEND_LWIP -DOPENAI_LOG_ENABLED=0 -DOPENAI_LOG_LEVEL=0 -DOPENAI_USE_TLS=1 -DOPENAI_TIMEOUT=30
+cmake -S . -B build -DOPENAI_HTTP_BACKEND=OPENAI_BACKEND_LWIP -DOPENAI_LOG_ENABLED=0 -DOPENAI_LOG_LEVEL=0 -DOPENAI_USE_TLS=1 -DOPENAI_TIMEOUT=30 -DOPENAI_BUILD_EXAMPLES=ON
 ```
+
+`OPENAI_HTTP_BACKEND` 支持三个值：
+- `OPENAI_BACKEND_CURL`（默认）— libcurl 后端
+- `OPENAI_BACKEND_LWIP` — lwIP 后端
+- `OPENAI_BACKEND_BOTH` — 同时编译两个后端
 
 **合并到你的工程：**
 
