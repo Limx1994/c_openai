@@ -224,8 +224,9 @@ static char* build_chat_request_body(OpenAI_ChatRequest* req) {
 
     if (req->max_tokens > 0) {
         char tokens_buf[64];
-        snprintf(tokens_buf, sizeof(tokens_buf), ",\"max_tokens\":%d", req->max_tokens);
-        size_t tokens_len = strlen(tokens_buf);
+        int tokens_w = snprintf(tokens_buf, sizeof(tokens_buf), ",\"max_tokens\":%d", req->max_tokens);
+        if (tokens_w < 0 || (size_t)tokens_w >= sizeof(tokens_buf)) { free(buf); return NULL; }
+        size_t tokens_len = (size_t)tokens_w;
         while (offset + tokens_len >= buf_size - 1) {
             buf_size *= 2;
             char* new_buf = (char*)realloc(buf, buf_size);
@@ -262,8 +263,9 @@ static char* build_chat_request_body(OpenAI_ChatRequest* req) {
         size_t stop_param_len = strlen(stop_str) + 32;
         char* stop_buf = (char*)malloc(stop_param_len);
         if (stop_buf) {
-            snprintf(stop_buf, stop_param_len, ",\"stop\":\"%s\"", stop_str);
-            size_t stop_len = strlen(stop_buf);
+            int stop_w = snprintf(stop_buf, stop_param_len, ",\"stop\":\"%s\"", stop_str);
+            if (stop_w < 0 || (size_t)stop_w >= stop_param_len) { free(stop_buf); free(escaped_stop); free(buf); return NULL; }
+            size_t stop_len = (size_t)stop_w;
             while (offset + stop_len >= buf_size - 1) {
                 buf_size *= 2;
                 char* new_buf = (char*)realloc(buf, buf_size);
@@ -399,21 +401,36 @@ static char* build_anthropic_request_body(OpenAI_ChatRequest* req) {
             }
             buf = new_buf;
         }
-    int written = snprintf(buf + offset, buf_size - offset,
-        "%s{\"role\":\"%s\",\"content\":\"%s\"}",
-        first_non_system ? "" : ",",
-        escaped_role ? escaped_role : msg->role,
-        escaped_content ? escaped_content : msg->content);
-    if (written < 0) {
-        free(escaped_content); free(escaped_role); free(buf);
-        return NULL;
-    }
-    offset += written;
+        int msg_w = snprintf(buf + offset, buf_size - offset,
+            "%s{\"role\":\"%s\",\"content\":\"%s\"}",
+            first_non_system ? "" : ",",
+            escaped_role ? escaped_role : msg->role,
+            escaped_content ? escaped_content : msg->content);
+        if (msg_w < 0) {
+            free(escaped_content); free(escaped_role); free(buf);
+            return NULL;
+        }
+        if ((size_t)(offset + msg_w) >= buf_size) {
+            /* Buffer too small, realloc and retry */
+            size_t needed = (size_t)offset + msg_w + 1;
+            while (buf_size < needed) buf_size *= 2;
+            char* new_buf = (char*)realloc(buf, buf_size);
+            if (!new_buf) { free(escaped_content); free(escaped_role); free(buf); return NULL; }
+            buf = new_buf;
+            msg_w = snprintf(buf + offset, buf_size - offset,
+                "%s{\"role\":\"%s\",\"content\":\"%s\"}",
+                first_non_system ? "" : ",",
+                escaped_role ? escaped_role : msg->role,
+                escaped_content ? escaped_content : msg->content);
+            if (msg_w < 0) { free(escaped_content); free(escaped_role); free(buf); return NULL; }
+        }
     first_non_system = 0;
     free(escaped_content);
     free(escaped_role);
     }
-    offset += snprintf(buf + offset, buf_size - offset, "]");
+    int arr_w = snprintf(buf + offset, buf_size - offset, "]");
+    if (arr_w < 0 || (size_t)(offset + arr_w) >= buf_size) { free(buf); return NULL; }
+    offset += arr_w;
 
     /* Add temperature. Anthropic Extended Thinking does not allow temperature changes. */
     if (!req->thinking_enabled && req->temperature >= 0.0f) {
@@ -895,7 +912,7 @@ OpenAI_ChatResponse* openai_chat_create(OpenAI_Client* client, OpenAI_ChatReques
                 resp->usage = (char*)malloc(strlen(usage_buf) + 1);
                 if (resp->usage) strcpy(resp->usage, usage_buf);
             }
-        } /* end else (OpenAI) */
+        } /* usage block end */
 }
 
     openai_json_free(json);
@@ -1769,7 +1786,7 @@ int openai_stream_read(void* stream, OpenAI_StreamEvent* event) {
                 free(line_buffer);
                 return 0;
             }
-            } /* end else (OpenAI) */
+            } /* OpenAI stream payload branch end */
             free(line_buffer);
         }
 

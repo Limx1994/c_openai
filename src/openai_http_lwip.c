@@ -314,14 +314,14 @@ static void* openai_http_connect(const char* host, int port, int is_https) {
 
 /* Reliable send over plain TCP socket */
 static int send_all_tcp(int sock, const char* data, size_t len) {
-    int total_sent = 0;
-    while (total_sent < (int)len) {
+    size_t total_sent = 0;
+    while (total_sent < len) {
         int sent = send(sock, data + total_sent, len - total_sent, 0);
         if (sent <= 0) {
             OPENAI_LOG_ERROR("lwIP: send failed");
             return -1;
         }
-        total_sent += sent;
+        total_sent += (size_t)sent;
     }
     return 0;
 }
