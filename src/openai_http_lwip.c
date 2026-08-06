@@ -606,8 +606,11 @@ static char* recv_response(recv_fn_t recv_fn, void* recv_arg, int is_stream,
     return buf;
 }
 
-/* Wrappers to match recv_fn_t signature */
+/* Wrappers to match recv_fn_t signature.
+   Cast size_t → int: callers must ensure len ≤ INT_MAX (recv_response
+   doubles buffer but never exceeds the SSE 64 KiB per-line limit). */
 static int recv_tcp_wrapper(void* arg, void* buf, size_t len) {
+    if (len > (size_t)INT_MAX) len = (size_t)INT_MAX;  /* truncate to int range */
     return recv((int)(intptr_t)arg, buf, len, 0);
 }
 
