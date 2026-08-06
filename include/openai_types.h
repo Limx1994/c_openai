@@ -80,6 +80,7 @@ typedef struct {
 #define OPENAI_EVENT_TOOL_USE_START "content_block.tool_use.start"
 #define OPENAI_EVENT_TOOL_USE_DELTA "content_block.tool_use.delta"
 #define OPENAI_EVENT_TOOL_USE_STOP  "content_block.tool_use.stop"
+#define OPENAI_EVENT_THINKING_SIG  "content_block.thinking.signature"
 
 /**
  * @brief Stream event structure
@@ -91,6 +92,8 @@ typedef struct {
     int index;                /**< Choice index */
     char* stop_reason;        /**< Stop reason for Anthropic (caller must free) */
     char* thinking;           /**< Anthropic Extended Thinking delta (caller must free) */
+    char* signature;          /**< Anthropic Extended Thinking signature (caller must free) */
+    char* usage;              /**< Token usage from message_delta (caller must free) */
 } OpenAI_StreamEvent;
 
 /**
