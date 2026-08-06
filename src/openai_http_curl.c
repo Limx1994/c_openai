@@ -6,6 +6,31 @@
 #include "openai_http.h"
 #include "openai_config.h"
 
+/* Append extra_headers (raw \r\n-delimited) to a curl_slist.
+   Returns the (possibly NULL) list on success, or NULL on allocation failure. */
+static struct curl_slist* append_extra_headers(struct curl_slist* list, const char* extra_headers)
+{
+    const char* p = extra_headers;
+    while (*p) {
+        const char* line_end = strstr(p, "\r\n");
+        size_t line_len = line_end ? (size_t)(line_end - p) : strlen(p);
+        if (line_len > 0) {
+            char* hdr = (char*)malloc(line_len + 1);
+            if (!hdr) {
+                if (list) curl_slist_free_all(list);
+                return NULL;
+            }
+            memcpy(hdr, p, line_len);
+            hdr[line_len] = '\0';
+            list = curl_slist_append(list, hdr);
+            free(hdr);
+        }
+        if (!line_end) break;
+        p = line_end + 2;
+    }
+    return list;
+}
+
 static int curl_init_count = 0;
 
 struct memory_chunk {
@@ -121,11 +146,13 @@ static OpenAI_HTTPResponse* do_curl_request(OpenAI_HTTPRequest* req, int is_stre
 
     struct curl_slist* headers = NULL;
     headers = curl_slist_append(headers, "Content-Type: application/json");
+    if (!headers) { OPENAI_LOG_ERROR("curl_slist_append failed"); curl_easy_cleanup(curl); free(resp); return NULL; }
     if (is_stream) {
         headers = curl_slist_append(headers, "Accept: text/event-stream");
     } else {
         headers = curl_slist_append(headers, "Accept: application/json");
     }
+    if (!headers) { OPENAI_LOG_ERROR("curl_slist_append failed"); curl_easy_cleanup(curl); free(resp); return NULL; }
     if (req->auth_header) {
         char auth_header[512];
         if (req->auth_mode == 1) {
@@ -134,29 +161,17 @@ static OpenAI_HTTPResponse* do_curl_request(OpenAI_HTTPRequest* req, int is_stre
             snprintf(auth_header, sizeof(auth_header), "Authorization: Bearer %s", req->auth_header);
         }
         headers = curl_slist_append(headers, auth_header);
+        if (!headers) { OPENAI_LOG_ERROR("curl_slist_append failed"); curl_easy_cleanup(curl); free(resp); return NULL; }
     }
-    if (req->extra_headers) {
-        const char* p = req->extra_headers;
-        while (*p) {
-            const char* line_end = strstr(p, "\r\n");
-            size_t line_len = line_end ? (size_t)(line_end - p) : strlen(p);
-            if (line_len > 0) {
-                char* hdr = (char*)malloc(line_len + 1);
-                if (hdr) {
-                    memcpy(hdr, p, line_len);
-                    hdr[line_len] = '\0';
-                    headers = curl_slist_append(headers, hdr);
-                    free(hdr);
-                }
-            }
-            if (line_end) p = line_end + 2; else break;
-        }
-    }
-    if (headers) {
-        curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    headers = append_extra_headers(headers, req->extra_headers);
+    if (!headers) {
+        OPENAI_LOG_ERROR("Failed to append extra headers (allocation failure)");
+        curl_easy_cleanup(curl);
+        free(resp);
+        return NULL;
     }
 
-    if (is_stream) {
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
         /* For streaming, only set connect timeout (not total transfer timeout).
          * Long-running streams may exceed OPENAI_TIMEOUT. */
         curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, OPENAI_TIMEOUT);
@@ -295,25 +310,11 @@ OpenAI_HTTPStream* openai_http_stream_open(OpenAI_HTTPRequest* req, int* status_
                  "x-api-key: %s" : "Authorization: Bearer %s", req->auth_header);
         stream->headers = curl_slist_append(stream->headers, auth_header);
     }
-    if (req->extra_headers) {
-        const char* p = req->extra_headers;
-        while (*p) {
-            const char* line_end = strstr(p, "\r\n");
-            size_t line_len = line_end ? (size_t)(line_end - p) : strlen(p);
-            if (line_len > 0) {
-                char* header = (char*)malloc(line_len + 1);
-                if (!header) {
-                    openai_http_stream_close(stream);
-                    return NULL;
-                }
-                memcpy(header, p, line_len);
-                header[line_len] = '\0';
-                stream->headers = curl_slist_append(stream->headers, header);
-                free(header);
-            }
-            if (!line_end) break;
-            p = line_end + 2;
-        }
+    stream->headers = append_extra_headers(stream->headers, req->extra_headers);
+    if (!stream->headers) {
+        OPENAI_LOG_ERROR("Failed to append extra headers (allocation failure)");
+        openai_http_stream_close(stream);
+        return NULL;
     }
 
     curl_easy_setopt(stream->easy, CURLOPT_URL, req->url);

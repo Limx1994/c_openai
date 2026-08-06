@@ -17,7 +17,7 @@ struct OpenAI_Client {
     int last_error; /* Last OpenAI_ErrorCode */
 };
 
-static int s_client_count = 0;
+static int s_client_count = 0;  /* Not thread-safe; only use single-threaded */
 
 /* Safe size addition with overflow check; returns -1 on overflow, 0 on success */
 static int size_add_overflow(size_t a, size_t b, size_t *out) {
@@ -81,14 +81,19 @@ int openai_client_set_base_url(OpenAI_Client* client, const char* base_url) {
         client->base_url = NULL;
     }
 
-    /* Set new base_url if provided */
+    /* Set new base_url if provided.
+       Strip any URL fragment (#...) so it doesn't contaminate path concatenation. */
     if (base_url) {
-        client->base_url = (char*)malloc(strlen(base_url) + 1);
+        /* Find and truncate at '#' */
+        const char* frag = strchr(base_url, '#');
+        size_t base_len = frag ? (size_t)(frag - base_url) : strlen(base_url);
+        client->base_url = (char*)malloc(base_len + 1);
         if (!client->base_url) {
             OPENAI_LOG_ERROR("Failed to allocate base_url string");
             return -1;
         }
-        strcpy(client->base_url, base_url);
+        memcpy(client->base_url, base_url, base_len);
+        client->base_url[base_len] = '\0';
     }
 
     return 0;
@@ -279,9 +284,13 @@ static char* build_chat_request_body(OpenAI_ChatRequest* req) {
         free(escaped_stop);
     }
 
-    /* Close messages array and object */
-    /* Ensure buffer has space for closing characters */
-    size_t closing_len = strlen("],\"stream\":true}");
+    /* Close messages array and object.
+       Only include "stream":true for streaming requests; omit "stream" entirely
+       for non-streaming since false is the API default. */
+    size_t closing_len = strlen("]}");
+    if (req->stream) {
+        closing_len = strlen("],\"stream\":true}");
+    }
     while (offset + closing_len >= buf_size - 1) {
         buf_size *= 2;
         char* new_buf = (char*)realloc(buf, buf_size);
@@ -292,8 +301,11 @@ static char* build_chat_request_body(OpenAI_ChatRequest* req) {
         buf = new_buf;
     }
 
-    snprintf(buf + offset, buf_size - offset, "],\"stream\":%s}",
-        req->stream ? "true" : "false");
+    if (req->stream) {
+        snprintf(buf + offset, buf_size - offset, "],\"stream\":true}");
+    } else {
+        snprintf(buf + offset, buf_size - offset, "]}");
+    }
 
     return buf;
 }
@@ -568,38 +580,21 @@ static OpenAI_ChatResponse* parse_anthropic_response(OpenAI_JSONNode* json) {
                     text_block_count++;
                 }
             } else if (type && strcmp(type, "tool_use") == 0) {
-                /* tool_use blocks: serialize as JSON string including input */
+                /* tool_use blocks: estimate JSON size without serialization.
+                   First pass only needs a rough estimate; second pass will
+                   serialize once with snprintf (growing buffer if needed). */
                 const char* id = openai_json_get_string(block, "id");
                 const char* name = openai_json_get_string(block, "name");
-                OpenAI_JSONNode* input = openai_json_get_object(block, "input");
-                char* input_str = input ? openai_json_serialize(input) : NULL;
-                char* escaped_id = openai_json_escape_string(id ? id : "");
-                char* escaped_name = openai_json_escape_string(name ? name : "");
-                if (!escaped_id || !escaped_name || (input && !input_str)) {
-                    free(input_str);
-                    free(escaped_id);
-                    free(escaped_name);
-                    free(resp->id); free(resp->model); free(resp->object); free(resp->usage);
-                    free(resp);
-                    return NULL;
-                }
-                /* {"id":"","name":"","input":} fixed overhead = 24 chars */
-                size_t id_len = strlen(escaped_id);
-                size_t name_len = strlen(escaped_name);
-                size_t input_len = input_str ? strlen(input_str) : 4;
-                size_t block_overhead = 28;
+                size_t id_est = id ? strlen(id) : 0;
+                size_t name_est = name ? strlen(name) : 0;
+                /* Overhead: {"id":"","name":"","input":null} �� 32 chars
+                   plus worst-case escaping (2�� for id/name). */
+                size_t overhead = 32 + id_est * 2 + name_est * 2;
                 size_t new_total = 0;
-                if (size_add_overflow(id_len, name_len, &new_total) != 0 ||
-                    size_add_overflow(new_total, input_len, &new_total) != 0 ||
-                    size_add_overflow(new_total, block_overhead, &new_total) != 0 ||
-                    size_add_overflow(new_total, total_content_len, &new_total) != 0) {
-                    free(input_str); free(escaped_id); free(escaped_name);
+                if (size_add_overflow(overhead, total_content_len, &new_total) != 0) {
                     goto parse_cleanup;
                 }
                 total_content_len = new_total;
-                free(input_str);
-                free(escaped_id);
-                free(escaped_name);
                 text_block_count++;
             } else if (type && strcmp(type, "thinking") == 0) {
                 const char* thinking = openai_json_get_string(block, "thinking");
@@ -636,7 +631,9 @@ static OpenAI_ChatResponse* parse_anthropic_response(OpenAI_JSONNode* json) {
                             pos += len;
                         }
                     } else if (type && strcmp(type, "tool_use") == 0) {
-                        /* Serialize tool_use block as JSON string including input */
+                        /* tool_use blocks: serialize as JSON string including input.
+                           Buffer may need to grow if escaping produces more chars than
+                           our first-pass estimate reserved. */
                         const char* id = openai_json_get_string(block, "id");
                         const char* name = openai_json_get_string(block, "name");
                         OpenAI_JSONNode* input = openai_json_get_object(block, "input");
@@ -651,13 +648,32 @@ static OpenAI_ChatResponse* parse_anthropic_response(OpenAI_JSONNode* json) {
                         int written = snprintf(resp->choices[0].content + pos, remaining,
                             "{\"id\":\"%s\",\"name\":\"%s\",\"input\":%s}",
                             escaped_id, escaped_name, input_str ? input_str : "null");
+                        if (written < 0) {
+                            free(input_str); free(escaped_id); free(escaped_name);
+                            goto content_cleanup;
+                        }
+                        if ((size_t)written >= remaining) {
+                            /* First-pass estimate was too small (rare; only when
+                               input object is large). Grow buffer to actual need. */
+                            size_t new_size = pos + (size_t)written + 1;
+                            if (new_size < pos + 1) {
+                                free(input_str); free(escaped_id); free(escaped_name);
+                                goto content_cleanup;
+                            }
+                            char* new_buf = (char*)realloc(resp->choices[0].content, new_size);
+                            if (!new_buf) {
+                                free(input_str); free(escaped_id); free(escaped_name);
+                                goto content_cleanup;
+                            }
+                            resp->choices[0].content = new_buf;
+                            snprintf(resp->choices[0].content + pos, (size_t)written + 1,
+                                "{\"id\":\"%s\",\"name\":\"%s\",\"input\":%s}",
+                                escaped_id, escaped_name, input_str ? input_str : "null");
+                        }
+                        pos += (size_t)written;
                         free(input_str);
                         free(escaped_id);
                         free(escaped_name);
-                        if (written < 0 || (size_t)written >= remaining) {
-                            goto content_cleanup;
-                        }
-                        pos += (size_t)written;
                     }
                 }
                 resp->choices[0].content[pos] = '\0';
