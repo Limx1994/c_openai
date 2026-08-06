@@ -25,6 +25,8 @@ struct OpenAI_JSONNode {
     int child_count;
 };
 typedef struct OpenAI_JSONNode OpenAI_JSONNode;
+/* Backward compatibility: also accept Openai_JSONNode (lowercase 'ai') */
+typedef OpenAI_JSONNode Openai_JSONNode;
 
 /**
  * @brief Parse JSON string into DOM
