@@ -10,6 +10,7 @@
    Returns the (possibly NULL) list on success, or NULL on allocation failure. */
 static struct curl_slist* append_extra_headers(struct curl_slist* list, const char* extra_headers)
 {
+    if (!extra_headers) return list;
     const char* p = extra_headers;
     while (*p) {
         const char* line_end = strstr(p, "\r\n");
@@ -32,6 +33,11 @@ static struct curl_slist* append_extra_headers(struct curl_slist* list, const ch
 }
 
 static int curl_init_count = 0;
+static OpenAI_HTTPError last_http_error = OPENAI_HTTP_ERROR_NONE;
+
+OpenAI_HTTPError openai_http_get_last_error(void) {
+    return last_http_error;
+}
 
 struct memory_chunk {
     char* data;
@@ -52,6 +58,7 @@ struct OpenAI_HTTPStream {
     int done;
     int failed;
     int paused;
+    OpenAI_HTTPError error;
 };
 
 static size_t write_callback(void* contents, size_t size, size_t nmemb, void* userp) {
@@ -107,11 +114,16 @@ void openai_http_cleanup(void) {
  * is_stream=1: streaming request (sets CURLOPT_CONNECTTIMEOUT only)
  */
 static OpenAI_HTTPResponse* do_curl_request(OpenAI_HTTPRequest* req, int is_stream) {
-    if (!req || !req->url) return NULL;
+    last_http_error = OPENAI_HTTP_ERROR_NONE;
+    if (!req || !req->url) {
+        last_http_error = OPENAI_HTTP_ERROR_NETWORK;
+        return NULL;
+    }
 
     CURL* curl = curl_easy_init();
     if (!curl) {
         OPENAI_LOG_ERROR("curl_easy_init failed");
+        last_http_error = OPENAI_HTTP_ERROR_NETWORK;
         return NULL;
     }
 
@@ -172,6 +184,7 @@ static OpenAI_HTTPResponse* do_curl_request(OpenAI_HTTPRequest* req, int is_stre
     }
 
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    if (is_stream) {
         /* For streaming, only set connect timeout (not total transfer timeout).
          * Long-running streams may exceed OPENAI_TIMEOUT. */
         curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, OPENAI_TIMEOUT);
@@ -184,6 +197,9 @@ static OpenAI_HTTPResponse* do_curl_request(OpenAI_HTTPRequest* req, int is_stre
 
     if (res != CURLE_OK) {
         OPENAI_LOG_ERROR("curl_easy_perform failed: %s", curl_easy_strerror(res));
+        last_http_error = res == CURLE_OPERATION_TIMEDOUT
+            ? OPENAI_HTTP_ERROR_TIMEOUT
+            : OPENAI_HTTP_ERROR_NETWORK;
         free(chunk.data);
         free(resp);
         if (headers) curl_slist_free_all(headers);
@@ -263,6 +279,10 @@ static int stream_check_messages(OpenAI_HTTPStream* stream) {
                 OPENAI_LOG_ERROR("stream transfer failed: %s",
                                  curl_easy_strerror(message->data.result));
                 stream->failed = 1;
+                stream->error = message->data.result == CURLE_OPERATION_TIMEDOUT
+                    ? OPENAI_HTTP_ERROR_TIMEOUT
+                    : OPENAI_HTTP_ERROR_NETWORK;
+                last_http_error = stream->error;
             }
         }
     }
@@ -275,6 +295,8 @@ static int stream_pump(OpenAI_HTTPStream* stream) {
     if (code != CURLM_OK) {
         OPENAI_LOG_ERROR("curl_multi_perform failed: %s", curl_multi_strerror(code));
         stream->failed = 1;
+        stream->error = OPENAI_HTTP_ERROR_NETWORK;
+        last_http_error = stream->error;
         return -1;
     }
     if (stream_check_messages(stream) != 0) return -1;
@@ -283,6 +305,8 @@ static int stream_pump(OpenAI_HTTPStream* stream) {
         if (code != CURLM_OK) {
             OPENAI_LOG_ERROR("curl_multi_poll failed: %s", curl_multi_strerror(code));
             stream->failed = 1;
+            stream->error = OPENAI_HTTP_ERROR_NETWORK;
+            last_http_error = stream->error;
             return -1;
         }
     }
@@ -290,7 +314,11 @@ static int stream_pump(OpenAI_HTTPStream* stream) {
 }
 
 OpenAI_HTTPStream* openai_http_stream_open(OpenAI_HTTPRequest* req, int* status_code) {
-    if (!req || !req->url || !status_code) return NULL;
+    last_http_error = OPENAI_HTTP_ERROR_NONE;
+    if (!req || !req->url || !status_code) {
+        last_http_error = OPENAI_HTTP_ERROR_NETWORK;
+        return NULL;
+    }
 
     OpenAI_HTTPStream* stream = (OpenAI_HTTPStream*)calloc(1, sizeof(OpenAI_HTTPStream));
     if (!stream) return NULL;
@@ -354,23 +382,41 @@ OpenAI_HTTPStream* openai_http_stream_open(OpenAI_HTTPRequest* req, int* status_
 }
 
 int openai_http_stream_read(OpenAI_HTTPStream* stream, void* buffer, size_t size) {
-    if (!stream || !buffer || size == 0) return -1;
+    last_http_error = OPENAI_HTTP_ERROR_NONE;
+    if (!stream || !buffer || size == 0) {
+        last_http_error = OPENAI_HTTP_ERROR_NETWORK;
+        return -1;
+    }
 
     while (stream->pos == stream->size && !stream->done) {
         stream->pos = 0;
         stream->size = 0;
         if (stream->paused) {
             stream->paused = 0;
-            if (curl_easy_pause(stream->easy, CURLPAUSE_CONT) != CURLE_OK) return -1;
+            if (curl_easy_pause(stream->easy, CURLPAUSE_CONT) != CURLE_OK) {
+                last_http_error = OPENAI_HTTP_ERROR_NETWORK;
+                return -1;
+            }
         }
         if (stream_pump(stream) != 0) return -1;
         if (!stream->done && stream->pos == stream->size) {
             CURLMcode code = curl_multi_poll(stream->multi, NULL, 0, 1000, NULL);
-            if (code != CURLM_OK) return -1;
+            if (code != CURLM_OK) {
+                last_http_error = OPENAI_HTTP_ERROR_NETWORK;
+                return -1;
+            }
         }
     }
 
-    if (stream->pos == stream->size) return stream->failed ? -1 : 0;
+    if (stream->pos == stream->size) {
+        if (stream->failed) {
+            last_http_error = stream->error != OPENAI_HTTP_ERROR_NONE
+                ? stream->error
+                : OPENAI_HTTP_ERROR_NETWORK;
+            return -1;
+        }
+        return 0;
+    }
     size_t available = stream->size - stream->pos;
     size_t count = size < available ? size : available;
     memcpy(buffer, stream->buffer + stream->pos, count);

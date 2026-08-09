@@ -1,6 +1,6 @@
-﻿# C-OpenAI
+# C-OpenAI
 
-跨平台的 OpenAI/Anthropic API C 语言客户端，专为 MCU（微控制器）和 POSIX 系统设计。
+一个跨平台的 OpenAI/Anthropic API C 语言客户端，专为 MCU（微控制器）和 POSIX 系统设计。
 
 ## 特性
 
@@ -38,10 +38,9 @@ c_openai/
 │   └── CMakeLists.txt    # 第三方库构建配置
 ├── example/              # 示例代码
 │   ├── chat_example.c    # OpenAI Chat Completions
-│   └── anthropic_example.c  # Anthropic Messages API
+│   ├── anthropic_example.c  # Anthropic Messages API
+│   └── CMakeLists.txt    # 示例构建配置
 ├── build.py              # 一键编译脚本（支持 lwIP/curl 后端）
-├── build.sh              # libcurl 构建脚本（MinGW/MSYS2）
-├── build_lwip.sh         # lwIP 构建脚本（ARM GCC）
 ├── CMakeLists.txt        # CMake 构建配置
 ├── README.md             # 英文文档
 ├── README_zh.md          # 中文文档
@@ -125,6 +124,9 @@ git submodule update --init --recursive
 bash build_lwip.sh
 ```
 
+该脚本只构建 `libopenai_lwip.a`。目标工程仍须提供真实的 RTOS/lwIP/mbedTLS
+平台层和网络驱动；未提供平台链接输入时，脚本会明确报告最终 firmware 链接未验证。
+
 或使用 CMake：
 
 ```bash
@@ -161,12 +163,6 @@ cmake --build build --parallel 10
 ```c
 #define OPENAI_TIMEOUT 30          // HTTP 超时秒数
 #define OPENAI_USE_TLS 1           // lwIP HTTPS（需要 mbedTLS）
-```
-
-`OPENAI_JSON_MAX_DEPTH` 控制 JSON 序列化的最大嵌套深度（默认 64）。在包含 `openai_json.h` 前定义可覆盖：
-
-```c
-#define OPENAI_JSON_MAX_DEPTH 32   // 嵌入式平台可降低以节省栈空间
 ```
 
 日志通过编译宏控制：
@@ -334,7 +330,7 @@ openai_client_set_base_url(client, "https://your-proxy.com/v1");
 |------|------|
 | `openai_chat_create_stream(client, req)` | 创建流式聊天请求 |
 | `openai_stream_read(stream, event)` | 从流中读取下一个事件 |
-| `openai_stream_event_free(event)` | 释放事件的 content/role/stop_reason/thinking 字段 |
+| `openai_stream_event_free(event)` | 释放事件的 content/role/stop_reason/thinking/signature/usage 字段 |
 | `openai_stream_close(stream)` | 关闭流并释放资源 |
 
 `event_type` 字段用于区分流式事件类型：
@@ -346,12 +342,11 @@ openai_client_set_base_url(client, "https://your-proxy.com/v1");
 | `OPENAI_EVENT_TOOL_USE_START` | Anthropic `tool_use` 块开始 |
 | `OPENAI_EVENT_TOOL_USE_DELTA` | Anthropic `tool_use` delta |
 | `OPENAI_EVENT_TOOL_USE_STOP` | Anthropic `tool_use` 块结束 |
+| `OPENAI_EVENT_THINKING_SIG` | Anthropic Extended Thinking signature delta |
 
 检查 `event->event_type` 来区分文本 delta、OpenAI tool_call delta 和 Anthropic tool_use 事件。`content` 对 tool_use 块保存 `partial_json`。
 
-流式响应会增量交付。`openai_chat_create_stream()` 在收到响应头后返回，
-`openai_stream_read()` 等待并解析下一条 SSE 事件。传输层使用
-`OPENAI_TIMEOUT` 作为空闲超时，单条未完成 SSE 行最大为 64 KiB。
+流式响应会增量交付。`openai_chat_create_stream()` 在收到响应头后返回，`openai_stream_read()` 等待并解析下一条 SSE 事件。传输层使用 `OPENAI_TIMEOUT` 作为空闲超时，单条未完成 SSE 行限制为 64 KiB。
 
 ### JSON 工具
 

@@ -4,6 +4,8 @@
 #include <stdint.h>
 #include <limits.h>
 #include <stdbool.h>
+#include <float.h>
+#include <math.h>
 
 #include "openai.h"
 #include "openai_config.h"
@@ -139,6 +141,11 @@ static void set_http_error(OpenAI_Client* client, int status_code) {
     else if (status_code == 429) client->last_error = OPENAI_ERR_RATE_LIMIT;
     else if (status_code >= 500) client->last_error = OPENAI_ERR_SERVER;
     else client->last_error = OPENAI_ERR_API;
+}
+
+static int get_transport_error(void) {
+    return openai_http_get_last_error() == OPENAI_HTTP_ERROR_TIMEOUT
+        ? OPENAI_ERR_TIMEOUT : OPENAI_ERR_NETWORK;
 }
 
 static int validate_anthropic_request(OpenAI_ChatRequest* req) {
@@ -324,20 +331,29 @@ static char* build_anthropic_request_body(OpenAI_ChatRequest* req) {
         if (msg->role && strcmp(msg->role, "system") == 0) {
             /* Accumulate system messages */
             char* escaped = openai_json_escape_string(msg->content ? msg->content : "");
-            size_t part_len = escaped ? strlen(escaped) : (msg->content ? strlen(msg->content) : 0);
+            if (!escaped) {
+                free(system_content);
+                free(buf);
+                return NULL;
+            }
+            size_t part_len = strlen(escaped);
             if (system_content) {
                 /* SIZE_MAX overflow protection */
                 if (part_len > SIZE_MAX - 3 ||
                     system_len > SIZE_MAX - part_len - 3) {
                     OPENAI_LOG_ERROR("system_content size overflow: sys=%zu part=%zu", system_len, part_len);
+                    free(escaped);
                     free(system_content);
-                    system_content = NULL;
+                    free(buf);
+                    return NULL;
                 } else {
                     char* new_sys = (char*)realloc(system_content, system_len + part_len + 3);
                     if (!new_sys) {
                         OPENAI_LOG_ERROR("realloc system_content failed, need %zu bytes", system_len + part_len + 3);
+                        free(escaped);
                         free(system_content);
-                        system_content = NULL;
+                        free(buf);
+                        return NULL;
                     } else {
                         system_content = new_sys;
                         if (system_len > 0) {
@@ -345,18 +361,21 @@ static char* build_anthropic_request_body(OpenAI_ChatRequest* req) {
                             system_content[system_len++] = 'n';
                             system_content[system_len] = '\0';
                         }
-                        memcpy(system_content + system_len, escaped ? escaped : (msg->content ? msg->content : ""), part_len);
+                        memcpy(system_content + system_len, escaped, part_len);
                         system_len += part_len;
                         system_content[system_len] = '\0';
                     }
                 }
             } else {
                 system_content = (char*)malloc(part_len + 1);
-                if (system_content) {
-                    memcpy(system_content, escaped ? escaped : (msg->content ? msg->content : ""), part_len);
-                    system_len = part_len;
-                    system_content[system_len] = '\0';
+                if (!system_content) {
+                    free(escaped);
+                    free(buf);
+                    return NULL;
                 }
+                memcpy(system_content, escaped, part_len);
+                system_len = part_len;
+                system_content[system_len] = '\0';
             }
             free(escaped);
         }
@@ -364,11 +383,18 @@ static char* build_anthropic_request_body(OpenAI_ChatRequest* req) {
 
     /* Build JSON: model, max_tokens, system (if any), messages, optional params, stream */
     char* escaped_model = openai_json_escape_string(req->model ? req->model : "claude-sonnet-4-20250514");
+    if (!escaped_model) {
+        free(system_content);
+        free(buf);
+        return NULL;
+    }
     int offset = snprintf(buf, buf_size,
         "{\"model\":\"%s\",\"max_tokens\":%d",
-        escaped_model ? escaped_model : "claude-sonnet-4-20250514",
+        escaped_model,
         req->max_tokens > 0 ? req->max_tokens : 4096);
     if (offset < 0 || (size_t)offset >= buf_size) {
+        free(escaped_model);
+        free(system_content);
         free(buf);
         return NULL;
     }
@@ -402,8 +428,13 @@ static char* build_anthropic_request_body(OpenAI_ChatRequest* req) {
         if (!msg->role || !msg->content) continue;
         char* escaped_content = openai_json_escape_string(msg->content);
         char* escaped_role = openai_json_escape_string(msg->role);
-        size_t msg_len = (escaped_role ? strlen(escaped_role) : strlen(msg->role)) +
-                         (escaped_content ? strlen(escaped_content) : strlen(msg->content)) + 64;
+        if (!escaped_content || !escaped_role) {
+            free(escaped_content);
+            free(escaped_role);
+            free(buf);
+            return NULL;
+        }
+        size_t msg_len = strlen(escaped_role) + strlen(escaped_content) + 64;
         while (offset + (int)msg_len >= (int)buf_size - 1) {
             buf_size *= 2;
             char* new_buf = (char*)realloc(buf, buf_size);
@@ -416,8 +447,7 @@ static char* build_anthropic_request_body(OpenAI_ChatRequest* req) {
         int msg_w = snprintf(buf + offset, buf_size - offset,
             "%s{\"role\":\"%s\",\"content\":\"%s\"}",
             first_non_system ? "" : ",",
-            escaped_role ? escaped_role : msg->role,
-            escaped_content ? escaped_content : msg->content);
+            escaped_role, escaped_content);
         if (msg_w < 0) {
             free(escaped_content); free(escaped_role); free(buf);
             return NULL;
@@ -432,13 +462,13 @@ static char* build_anthropic_request_body(OpenAI_ChatRequest* req) {
             msg_w = snprintf(buf + offset, buf_size - offset,
                 "%s{\"role\":\"%s\",\"content\":\"%s\"}",
                 first_non_system ? "" : ",",
-                escaped_role ? escaped_role : msg->role,
-                escaped_content ? escaped_content : msg->content);
+                escaped_role, escaped_content);
             if (msg_w < 0) { free(escaped_content); free(escaped_role); free(buf); return NULL; }
         }
-    first_non_system = 0;
-    free(escaped_content);
-    free(escaped_role);
+        offset += msg_w;
+        first_non_system = 0;
+        free(escaped_content);
+        free(escaped_role);
     }
     int arr_w = snprintf(buf + offset, buf_size - offset, "]");
     if (arr_w < 0 || (size_t)(offset + arr_w) >= buf_size) { free(buf); return NULL; }
@@ -479,22 +509,25 @@ static char* build_anthropic_request_body(OpenAI_ChatRequest* req) {
     /* Add stop_sequences (array format for Anthropic) */
     if (req->stop) {
         char* escaped_stop = openai_json_escape_string(req->stop);
-        const char* stop_str = escaped_stop ? escaped_stop : req->stop;
+        if (!escaped_stop) { free(buf); return NULL; }
+        const char* stop_str = escaped_stop;
         size_t stop_param_len = strlen(stop_str) + 48;
         char* stop_buf = (char*)malloc(stop_param_len);
-        if (stop_buf) {
-            snprintf(stop_buf, stop_param_len, ",\"stop_sequences\":[\"%s\"]", stop_str);
-            size_t stop_len = strlen(stop_buf);
-            while (offset + (int)stop_len >= (int)buf_size - 1) {
-                buf_size *= 2;
-                char* new_buf = (char*)realloc(buf, buf_size);
-                if (!new_buf) { free(stop_buf); free(escaped_stop); free(buf); return NULL; }
-                buf = new_buf;
-            }
-            strcpy(buf + offset, stop_buf);
-            offset += stop_len;
-            free(stop_buf);
+        if (!stop_buf) { free(escaped_stop); free(buf); return NULL; }
+        int stop_w = snprintf(stop_buf, stop_param_len, ",\"stop_sequences\":[\"%s\"]", stop_str);
+        if (stop_w < 0 || (size_t)stop_w >= stop_param_len) {
+            free(stop_buf); free(escaped_stop); free(buf); return NULL;
         }
+        size_t stop_len = (size_t)stop_w;
+        while (offset + (int)stop_len >= (int)buf_size - 1) {
+            buf_size *= 2;
+            char* new_buf = (char*)realloc(buf, buf_size);
+            if (!new_buf) { free(stop_buf); free(escaped_stop); free(buf); return NULL; }
+            buf = new_buf;
+        }
+        strcpy(buf + offset, stop_buf);
+        offset += stop_len;
+        free(stop_buf);
         free(escaped_stop);
     }
 
@@ -723,7 +756,6 @@ static OpenAI_ChatResponse* parse_anthropic_response(OpenAI_JSONNode* json) {
         }
     }
 
-    openai_json_free(json);
     return resp;
 
 content_cleanup:
@@ -734,7 +766,6 @@ content_cleanup:
     /* fall through to parse_cleanup */
 
 parse_cleanup:
-    openai_json_free(json);
     openai_chat_response_free(resp);
     return NULL;
 }
@@ -791,7 +822,7 @@ OpenAI_ChatResponse* openai_chat_create(OpenAI_Client* client, OpenAI_ChatReques
 
     if (!http_resp) {
         OPENAI_LOG_ERROR("HTTP request failed");
-        client->last_error = OPENAI_ERR_NETWORK;
+        client->last_error = get_transport_error();
         return NULL;
     }
 
@@ -995,7 +1026,6 @@ typedef struct {
     int current_index;      /* For Anthropic: current block index */
     char current_block_type[32]; /* For Anthropic: "text" or "thinking" */
     char* current_tool_id;  /* For Anthropic tool_use: current block id */
-    char* current_tool_name;/* For Anthropic tool_use: current block name */
 } OpenAI_StreamHandle;
 
 static int parse_sse_line(const char* data, size_t data_len, SSEParseResult* result) {
@@ -1212,7 +1242,7 @@ static int stream_fill_buffer(OpenAI_StreamHandle* handle) {
     int received = openai_http_stream_read(handle->http_stream,
         handle->buffer + handle->buffer_size,
         handle->buffer_capacity - handle->buffer_size);
-    if (received < 0) return OPENAI_ERR_NETWORK;
+    if (received < 0) return get_transport_error();
     if (received == 0) {
         handle->transport_eof = 1;
         return OPENAI_ERR_EOF;
@@ -1279,7 +1309,7 @@ void* openai_chat_create_stream(OpenAI_Client* client, OpenAI_ChatRequest* req) 
 
     if (!http_stream) {
         OPENAI_LOG_ERROR("Streaming HTTP request failed");
-        client->last_error = OPENAI_ERR_NETWORK;
+        client->last_error = get_transport_error();
         return NULL;
     }
 
@@ -1371,7 +1401,6 @@ int openai_stream_read(void* stream, OpenAI_StreamEvent* event) {
                     handle->current_event[ev_len] = '\0';
                 } else if (line_len > 6 && strncmp(line_buffer, "data: ", 6) == 0) {
                     const char* data_str = line_buffer + 6;
-                    size_t data_len = line_len - 6;
                     /* Check for message_stop */
                     if (strcmp(handle->current_event, "message_stop") == 0) {
                         /* If there's an active block, protocol error */
@@ -1379,8 +1408,6 @@ int openai_stream_read(void* stream, OpenAI_StreamEvent* event) {
                             OPENAI_LOG_ERROR("Anthropic: message_stop with active block");
                             free(handle->current_tool_id);
                             handle->current_tool_id = NULL;
-                            free(handle->current_tool_name);
-                            handle->current_tool_name = NULL;
                             handle->current_block_type[0] = '\0';
                             handle->current_index = -1;
                             handle->parse_pos = line_end + 1;
@@ -1422,7 +1449,6 @@ int openai_stream_read(void* stream, OpenAI_StreamEvent* event) {
                         /* Parse JSON using DOM */
                         OpenAI_JSONNode* root = NULL;
                         char* serialized_json = NULL;
-                        char* block_type = NULL;
                         int error_code = OPENAI_OK;
 
                         root = openai_json_parse(data_str);
@@ -1430,7 +1456,8 @@ int openai_stream_read(void* stream, OpenAI_StreamEvent* event) {
 
                         /* Extract index */
                         OpenAI_JSONNode* index_node = openai_json_get_object(root, "index");
-                        if (index_node && index_node->is_number) {
+                        if (index_node && index_node->is_number && index_node->number_value >= 0 &&
+                            index_node->number_value <= INT_MAX) {
                             handle->current_index = (int)index_node->number_value;
                         } else {
                             goto anthropic_block_error;
@@ -1453,14 +1480,12 @@ int openai_stream_read(void* stream, OpenAI_StreamEvent* event) {
                             if (!tool_id || !tool_name) goto anthropic_block_error;
 
                             handle->current_tool_id = (char*)malloc(strlen(tool_id) + 1);
-                            handle->current_tool_name = (char*)malloc(strlen(tool_name) + 1);
-                            if (!handle->current_tool_id || !handle->current_tool_name) {
-                                OPENAI_LOG_ERROR("Anthropic tool_use: OOM allocating id/name");
+                            if (!handle->current_tool_id) {
+                                OPENAI_LOG_ERROR("Anthropic tool_use: OOM allocating id");
                                 error_code = OPENAI_ERR_MEMORY;
                                 goto anthropic_block_error;
                             }
                             strcpy(handle->current_tool_id, tool_id);
-                            strcpy(handle->current_tool_name, tool_name);
 
                             /* Build START event content: {"index":N,"id":"...","name":"..."} */
                             OpenAI_JSONNode* start_obj = (OpenAI_JSONNode*)calloc(1, sizeof(OpenAI_JSONNode));
@@ -1544,13 +1569,27 @@ int openai_stream_read(void* stream, OpenAI_StreamEvent* event) {
 
                         anthropic_block_error_obj:
                             openai_json_free(start_obj);
+                        } else if (strcmp(type, "text") == 0 || strcmp(type, "thinking") == 0) {
+                            const char* initial_content = openai_json_get_string(cb,
+                                strcmp(type, "text") == 0 ? "text" : "thinking");
+                            if (!initial_content) goto anthropic_block_error;
+                            handle->parse_pos = line_end + 1;
+                            while (handle->parse_pos < handle->buffer_size &&
+                                   (handle->buffer[handle->parse_pos] == '\n' ||
+                                    handle->buffer[handle->parse_pos] == '\r')) {
+                                handle->parse_pos++;
+                            }
+                            free(line_buffer);
+                            openai_json_free(root);
+                            continue;
+                        } else {
+                            goto anthropic_block_error;
                         }
 
                     anthropic_block_error:
                         if (error_code == OPENAI_OK) error_code = OPENAI_ERR_PARSE;
                         OPENAI_LOG_ERROR("Anthropic block_start parse error");
                         free(handle->current_tool_id); handle->current_tool_id = NULL;
-                        free(handle->current_tool_name); handle->current_tool_name = NULL;
                         handle->current_block_type[0] = '\0';
                         handle->current_index = -1;
                         handle->parse_pos = line_end + 1;
@@ -1623,6 +1662,13 @@ int openai_stream_read(void* stream, OpenAI_StreamEvent* event) {
                     }
                     /* Parse content_block_delta */
                     if (strcmp(handle->current_event, "content_block_delta") == 0) {
+                        if (handle->current_block_type[0] == '\0') {
+                            OPENAI_LOG_ERROR("Anthropic delta without active block");
+                            free(line_buffer);
+                            handle->eof = 1;
+                            return OPENAI_ERR_PARSE;
+                        }
+
                         /* Read event's own index, validate against current */
                         int incoming_index = -1;
                         OpenAI_JSONNode* delta_root = openai_json_parse(data_str);
@@ -1635,6 +1681,26 @@ int openai_stream_read(void* stream, OpenAI_StreamEvent* event) {
                         if (incoming_index != handle->current_index) {
                             OPENAI_LOG_ERROR("Anthropic delta index mismatch: got=%d expected=%d",
                                 incoming_index, handle->current_index);
+                            openai_json_free(delta_root);
+                            free(line_buffer);
+                            handle->eof = 1;
+                            return OPENAI_ERR_PARSE;
+                        }
+
+                        OpenAI_JSONNode* delta_node = openai_json_get_object(delta_root, "delta");
+                        const char* delta_type = delta_node
+                            ? openai_json_get_string(delta_node, "type") : NULL;
+                        int type_matches = delta_type &&
+                            ((strcmp(handle->current_block_type, "text") == 0 &&
+                              strcmp(delta_type, "text_delta") == 0) ||
+                             (strcmp(handle->current_block_type, "thinking") == 0 &&
+                              (strcmp(delta_type, "thinking_delta") == 0 ||
+                               strcmp(delta_type, "signature_delta") == 0)) ||
+                             (strcmp(handle->current_block_type, "tool_use") == 0 &&
+                              strcmp(delta_type, "input_json_delta") == 0));
+                        if (!type_matches) {
+                            OPENAI_LOG_ERROR("Anthropic delta type mismatch: got=%s block=%s",
+                                delta_type ? delta_type : "(null)", handle->current_block_type);
                             openai_json_free(delta_root);
                             free(line_buffer);
                             handle->eof = 1;
@@ -1681,6 +1747,13 @@ int openai_stream_read(void* stream, OpenAI_StreamEvent* event) {
                     }
                     /* Parse content_block_stop */
                     if (strcmp(handle->current_event, "content_block_stop") == 0) {
+                        if (handle->current_block_type[0] == '\0') {
+                            OPENAI_LOG_ERROR("Anthropic block_stop without active block");
+                            free(line_buffer);
+                            handle->eof = 1;
+                            return OPENAI_ERR_PARSE;
+                        }
+
                         /* Read event's own index, validate against current */
                         int incoming_index = -1;
                         OpenAI_JSONNode* stop_root = openai_json_parse(data_str);
@@ -1716,8 +1789,6 @@ int openai_stream_read(void* stream, OpenAI_StreamEvent* event) {
                             /* Clear block state after event construction */
                             free(handle->current_tool_id);
                             handle->current_tool_id = NULL;
-                            free(handle->current_tool_name);
-                            handle->current_tool_name = NULL;
                             handle->current_block_type[0] = '\0';
                             handle->current_index = -1;
                             return 0;
@@ -1726,8 +1797,6 @@ int openai_stream_read(void* stream, OpenAI_StreamEvent* event) {
                         /* All block types: clear state */
                         free(handle->current_tool_id);
                         handle->current_tool_id = NULL;
-                        free(handle->current_tool_name);
-                        handle->current_tool_name = NULL;
                         handle->current_block_type[0] = '\0';
                         handle->current_index = -1;
                         openai_json_free(stop_root);
@@ -1823,7 +1892,6 @@ void openai_stream_close(void* stream) {
         if (handle->buffer) free(handle->buffer);
         if (handle->current_role) free(handle->current_role);
         if (handle->current_tool_id) free(handle->current_tool_id);
-        if (handle->current_tool_name) free(handle->current_tool_name);
         free(handle);
     }
 }
@@ -1846,9 +1914,303 @@ void openai_stream_event_free(OpenAI_StreamEvent* event) {
     }
 }
 
+static const char* embedding_json_skip_space(const char* p) {
+    while (*p == ' ' || *p == '\n' || *p == '\r' || *p == '\t') p++;
+    return p;
+}
+
+static int embedding_json_is_hex(char c) {
+    return (c >= '0' && c <= '9') ||
+           (c >= 'a' && c <= 'f') ||
+           (c >= 'A' && c <= 'F');
+}
+
+static unsigned int embedding_json_hex_value(char c) {
+    if (c >= '0' && c <= '9') return (unsigned int)(c - '0');
+    if (c >= 'a' && c <= 'f') return (unsigned int)(c - 'a' + 10);
+    return (unsigned int)(c - 'A' + 10);
+}
+
+/* Returns one byte past the closing quote, or NULL for malformed JSON. */
+static const char* embedding_json_skip_string(const char* p) {
+    if (*p != '"') return NULL;
+    p++;
+    while (*p && *p != '"') {
+        if ((unsigned char)*p < 0x20) return NULL;
+        if (*p != '\\') {
+            p++;
+            continue;
+        }
+
+        p++;
+        if (*p == '"' || *p == '\\' || *p == '/' || *p == 'b' ||
+            *p == 'f' || *p == 'n' || *p == 'r' || *p == 't') {
+            p++;
+            continue;
+        }
+        if (*p != 'u') return NULL;
+        p++;
+        for (int i = 0; i < 4; i++) {
+            if (!embedding_json_is_hex(p[i])) return NULL;
+        }
+        p += 4;
+    }
+    return *p == '"' ? p + 1 : NULL;
+}
+
+/* Compare a validated JSON string token with an ASCII object key without allocating. */
+static int embedding_json_key_equals(const char* start, const char* end, const char* expected) {
+    const char* p = start + 1;
+    const char* limit = end - 1;
+    size_t index = 0;
+
+    while (p < limit) {
+        unsigned int ch = (unsigned char)*p++;
+        if (ch == '\\') {
+            if (p >= limit) return 0;
+            char escaped = *p++;
+            switch (escaped) {
+                case '"': ch = '"'; break;
+                case '\\': ch = '\\'; break;
+                case '/': ch = '/'; break;
+                case 'b': ch = '\b'; break;
+                case 'f': ch = '\f'; break;
+                case 'n': ch = '\n'; break;
+                case 'r': ch = '\r'; break;
+                case 't': ch = '\t'; break;
+                case 'u':
+                    if ((size_t)(limit - p) < 4) return 0;
+                    ch = 0;
+                    for (int i = 0; i < 4; i++) {
+                        if (!embedding_json_is_hex(p[i])) return 0;
+                        ch = (ch << 4) | embedding_json_hex_value(p[i]);
+                    }
+                    p += 4;
+                    break;
+                default:
+                    return 0;
+            }
+        }
+        if (ch > 0x7F || expected[index] == '\0' ||
+            ch != (unsigned char)expected[index]) {
+            return 0;
+        }
+        index++;
+    }
+    return expected[index] == '\0';
+}
+
+/* Strict RFC 8259 number scanner. Embeddings must also fit in a finite float. */
+static const char* embedding_json_parse_number(const char* p, double* value) {
+    const char* start = p;
+    if (*p == '-') p++;
+
+    if (*p == '0') {
+        p++;
+        if (*p >= '0' && *p <= '9') return NULL;
+    } else if (*p >= '1' && *p <= '9') {
+        do { p++; } while (*p >= '0' && *p <= '9');
+    } else {
+        return NULL;
+    }
+
+    if (*p == '.') {
+        p++;
+        if (*p < '0' || *p > '9') return NULL;
+        do { p++; } while (*p >= '0' && *p <= '9');
+    }
+    if (*p == 'e' || *p == 'E') {
+        p++;
+        if (*p == '+' || *p == '-') p++;
+        if (*p < '0' || *p > '9') return NULL;
+        do { p++; } while (*p >= '0' && *p <= '9');
+    }
+
+    char* parsed_end = NULL;
+    double parsed = strtod(start, &parsed_end);
+    if (parsed_end != p || !isfinite(parsed) || parsed > FLT_MAX || parsed < -FLT_MAX) {
+        return NULL;
+    }
+    if (value) *value = parsed;
+    return p;
+}
+
+static const char* embedding_json_skip_value(const char* p, int depth) {
+    if (depth > OPENAI_JSON_MAX_DEPTH) return NULL;
+    p = embedding_json_skip_space(p);
+
+    if (*p == '"') return embedding_json_skip_string(p);
+    if (*p == '-' || (*p >= '0' && *p <= '9')) {
+        return embedding_json_parse_number(p, NULL);
+    }
+    if (strncmp(p, "true", 4) == 0) return p + 4;
+    if (strncmp(p, "false", 5) == 0) return p + 5;
+    if (strncmp(p, "null", 4) == 0) return p + 4;
+
+    if (*p == '[') {
+        p = embedding_json_skip_space(p + 1);
+        if (*p == ']') return p + 1;
+        while (*p) {
+            p = embedding_json_skip_value(p, depth + 1);
+            if (!p) return NULL;
+            p = embedding_json_skip_space(p);
+            if (*p == ']') return p + 1;
+            if (*p != ',') return NULL;
+            p = embedding_json_skip_space(p + 1);
+            if (*p == ']' || *p == '\0') return NULL;
+        }
+        return NULL;
+    }
+
+    if (*p == '{') {
+        p = embedding_json_skip_space(p + 1);
+        if (*p == '}') return p + 1;
+        while (*p) {
+            const char* key_end = embedding_json_skip_string(p);
+            if (!key_end) return NULL;
+            p = embedding_json_skip_space(key_end);
+            if (*p != ':') return NULL;
+            p = embedding_json_skip_value(p + 1, depth + 1);
+            if (!p) return NULL;
+            p = embedding_json_skip_space(p);
+            if (*p == '}') return p + 1;
+            if (*p != ',') return NULL;
+            p = embedding_json_skip_space(p + 1);
+            if (*p == '}' || *p == '\0') return NULL;
+        }
+    }
+    return NULL;
+}
+
+static int embedding_find_array_in_data(const char* value, const char** array_start) {
+    const char* p = embedding_json_skip_space(value);
+    if (*p != '[') return OPENAI_ERR_PARSE;
+    p = embedding_json_skip_space(p + 1);
+    if (*p == ']' || *p != '{') return OPENAI_ERR_PARSE;
+
+    p = embedding_json_skip_space(p + 1);
+    if (*p == '}') return OPENAI_ERR_PARSE;
+    while (*p) {
+        const char* key_start = p;
+        const char* key_end = embedding_json_skip_string(key_start);
+        if (!key_end) return OPENAI_ERR_PARSE;
+        p = embedding_json_skip_space(key_end);
+        if (*p != ':') return OPENAI_ERR_PARSE;
+        const char* item_value = embedding_json_skip_space(p + 1);
+
+        if (embedding_json_key_equals(key_start, key_end, "embedding")) {
+            if (*item_value != '[') return OPENAI_ERR_PARSE;
+            *array_start = item_value;
+            return OPENAI_OK;
+        }
+
+        p = embedding_json_skip_value(item_value, 1);
+        if (!p) return OPENAI_ERR_PARSE;
+        p = embedding_json_skip_space(p);
+        if (*p == '}') return OPENAI_ERR_PARSE;
+        if (*p != ',') return OPENAI_ERR_PARSE;
+        p = embedding_json_skip_space(p + 1);
+        if (*p == '}' || *p == '\0') return OPENAI_ERR_PARSE;
+    }
+    return OPENAI_ERR_PARSE;
+}
+
+static int embedding_find_array(const char* json, const char** array_start) {
+    const char* p = embedding_json_skip_space(json);
+    if (*p != '{') return OPENAI_ERR_PARSE;
+    p = embedding_json_skip_space(p + 1);
+    if (*p == '}') return OPENAI_ERR_PARSE;
+
+    while (*p) {
+        const char* key_start = p;
+        const char* key_end = embedding_json_skip_string(key_start);
+        if (!key_end) return OPENAI_ERR_PARSE;
+        p = embedding_json_skip_space(key_end);
+        if (*p != ':') return OPENAI_ERR_PARSE;
+        const char* value = embedding_json_skip_space(p + 1);
+
+        if (embedding_json_key_equals(key_start, key_end, "data")) {
+            return embedding_find_array_in_data(value, array_start);
+        }
+
+        p = embedding_json_skip_value(value, 1);
+        if (!p) return OPENAI_ERR_PARSE;
+        p = embedding_json_skip_space(p);
+        if (*p == '}') return OPENAI_ERR_PARSE;
+        if (*p != ',') return OPENAI_ERR_PARSE;
+        p = embedding_json_skip_space(p + 1);
+        if (*p == '}' || *p == '\0') return OPENAI_ERR_PARSE;
+    }
+    return OPENAI_ERR_PARSE;
+}
+
+static int embedding_parse_vector(char* json, float** values, size_t* dimension) {
+    const char* array_start = NULL;
+    int find_result = embedding_find_array(json, &array_start);
+    if (find_result != OPENAI_OK) return find_result;
+
+    const char* p = embedding_json_skip_space(array_start + 1);
+    if (*p == ']') return OPENAI_ERR_PARSE;
+
+    size_t count = 0;
+    const char* array_end = NULL;
+    while (*p) {
+        const char* number_end = embedding_json_parse_number(p, NULL);
+        if (!number_end || count == SIZE_MAX) return OPENAI_ERR_PARSE;
+        count++;
+        p = embedding_json_skip_space(number_end);
+        if (*p == ']') {
+            array_end = p;
+            break;
+        }
+        if (*p != ',') return OPENAI_ERR_PARSE;
+        p = embedding_json_skip_space(p + 1);
+        if (*p == ']' || *p == '\0') return OPENAI_ERR_PARSE;
+    }
+    if (!array_end || count == 0 || count > SIZE_MAX / sizeof(float)) {
+        return OPENAI_ERR_PARSE;
+    }
+
+    float* parsed_values = (float*)malloc(count * sizeof(float));
+    if (!parsed_values) return OPENAI_ERR_MEMORY;
+
+    p = embedding_json_skip_space(array_start + 1);
+    for (size_t i = 0; i < count; i++) {
+        double value = 0;
+        const char* number_end = embedding_json_parse_number(p, &value);
+        if (!number_end) {
+            free(parsed_values);
+            return OPENAI_ERR_PARSE;
+        }
+        parsed_values[i] = (float)value;
+        p = embedding_json_skip_space(number_end);
+        if (i + 1 < count) {
+            if (*p != ',') {
+                free(parsed_values);
+                return OPENAI_ERR_PARSE;
+            }
+            p = embedding_json_skip_space(p + 1);
+        }
+    }
+    if (p != array_end) {
+        free(parsed_values);
+        return OPENAI_ERR_PARSE;
+    }
+
+    /* Keep the body valid while preventing the DOM parser from allocating one node per value. */
+    memset((char*)array_start + 1, ' ', (size_t)(array_end - array_start - 1));
+    *values = parsed_values;
+    *dimension = count;
+    return OPENAI_OK;
+}
+
 /* Embeddings API */
 OpenAI_EmbeddingResponse* openai_embeddings_create(OpenAI_Client* client, OpenAI_EmbeddingRequest* req) {
-    if (!client || !req || !req->input) return NULL;
+    if (!client) return NULL;
+    if (!req || !req->input) {
+        client->last_error = OPENAI_ERR_INVALID_PARAM;
+        return NULL;
+    }
 
     const char* base_url = get_effective_base_url(client);
     char url[512];
@@ -1859,20 +2221,39 @@ OpenAI_EmbeddingResponse* openai_embeddings_create(OpenAI_Client* client, OpenAI
     /* Build request body - input must be escaped to prevent JSON injection */
     char* escaped_input = openai_json_escape_string(req->input);
     char* escaped_model = openai_json_escape_string(req->model ? req->model : "text-embedding-3-small");
-    const char* model_str = escaped_model ? escaped_model : "text-embedding-3-small";
-    const char* input_str = escaped_input ? escaped_input : "";
-    size_t body_size = strlen(model_str) + strlen(input_str) + 64;
+    if (!escaped_input || !escaped_model) {
+        free(escaped_input);
+        free(escaped_model);
+        client->last_error = OPENAI_ERR_MEMORY;
+        return NULL;
+    }
+    const char* model_str = escaped_model;
+    const char* input_str = escaped_input;
+    size_t body_size = 0;
+    if (size_add_overflow(strlen(model_str), strlen(input_str), &body_size) != 0 ||
+        size_add_overflow(body_size, 64, &body_size) != 0) {
+        free(escaped_input);
+        free(escaped_model);
+        client->last_error = OPENAI_ERR_MEMORY;
+        return NULL;
+    }
     char* body = (char*)malloc(body_size);
     if (!body) {
         free(escaped_input);
         free(escaped_model);
+        client->last_error = OPENAI_ERR_MEMORY;
         return NULL;
     }
-    snprintf(body, body_size,
+    int body_written = snprintf(body, body_size,
         "{\"model\":\"%s\",\"input\":\"%s\"}",
         model_str, input_str);
     free(escaped_input);
     free(escaped_model);
+    if (body_written < 0 || (size_t)body_written >= body_size) {
+        free(body);
+        client->last_error = OPENAI_ERR_MEMORY;
+        return NULL;
+    }
 
     OpenAI_HTTPRequest http_req = {
         .url = url,
@@ -1886,7 +2267,7 @@ OpenAI_EmbeddingResponse* openai_embeddings_create(OpenAI_Client* client, OpenAI
     free(body);
     if (!http_resp) {
         OPENAI_LOG_ERROR("Embeddings HTTP request failed");
-        client->last_error = OPENAI_ERR_NETWORK;
+        client->last_error = get_transport_error();
         return NULL;
     }
 
@@ -1899,12 +2280,25 @@ OpenAI_EmbeddingResponse* openai_embeddings_create(OpenAI_Client* client, OpenAI
         return NULL;
     }
 
-    /* Parse JSON response */
+    /* Parse the large numeric array directly into its final contiguous buffer. */
+    float* embedding_values = NULL;
+    size_t embedding_dim = 0;
+    int vector_result = http_resp->body
+        ? embedding_parse_vector(http_resp->body, &embedding_values, &embedding_dim)
+        : OPENAI_ERR_PARSE;
+    if (vector_result != OPENAI_OK) {
+        OPENAI_LOG_ERROR("Failed to parse embeddings vector: error=%d", vector_result);
+        client->last_error = vector_result;
+        openai_http_response_free(http_resp);
+        return NULL;
+    }
+
+    /* The vector contents were blanked in-place, so this DOM remains small. */
     OpenAI_JSONNode* json = openai_json_parse(http_resp->body);
     openai_http_response_free(http_resp);
-
     if (!json) {
         OPENAI_LOG_ERROR("Failed to parse embeddings JSON response");
+        free(embedding_values);
         client->last_error = OPENAI_ERR_PARSE;
         return NULL;
     }
@@ -1912,43 +2306,37 @@ OpenAI_EmbeddingResponse* openai_embeddings_create(OpenAI_Client* client, OpenAI
     OpenAI_EmbeddingResponse* resp = (OpenAI_EmbeddingResponse*)calloc(1, sizeof(OpenAI_EmbeddingResponse));
     if (!resp) {
         OPENAI_LOG_ERROR("Failed to allocate embedding response structure");
+        free(embedding_values);
         openai_json_free(json);
+        client->last_error = OPENAI_ERR_MEMORY;
         return NULL;
     }
+    resp->embedding = embedding_values;
+    resp->embedding_dim = embedding_dim;
 
     /* Extract object and model fields */
     const char* object = openai_json_get_string(json, "object");
     if (object) {
         resp->object = (char*)malloc(strlen(object) + 1);
-        if (resp->object) strcpy(resp->object, object);
+        if (!resp->object) goto embedding_memory_error;
+        strcpy(resp->object, object);
     }
     const char* model = openai_json_get_string(json, "model");
     if (model) {
         resp->model = (char*)malloc(strlen(model) + 1);
-        if (resp->model) strcpy(resp->model, model);
-    }
-
-    /* Extract embedding from data[0].embedding */
-    OpenAI_JSONNode* data = openai_json_get_object(json, "data");
-    if (data && data->child_count > 0) {
-        OpenAI_JSONNode* item = openai_json_array_first(data);
-        if (item) {
-            OpenAI_JSONNode* embedding = openai_json_get_object(item, "embedding");
-            if (embedding && embedding->child_count > 0) {
-                resp->embedding_dim = embedding->child_count;
-                resp->embedding = (float*)malloc(sizeof(float) * resp->embedding_dim);
-                if (resp->embedding) {
-                    size_t ei = 0;
-                    for (OpenAI_JSONNode* val = openai_json_array_first(embedding); val && ei < resp->embedding_dim; val = openai_json_array_next(val), ei++) {
-                        resp->embedding[ei] = (float)val->number_value;
-                    }
-                }
-            }
-        }
+        if (!resp->model) goto embedding_memory_error;
+        strcpy(resp->model, model);
     }
 
     openai_json_free(json);
     return resp;
+
+embedding_memory_error:
+    OPENAI_LOG_ERROR("Failed to allocate embeddings metadata");
+    openai_json_free(json);
+    openai_embedding_response_free(resp);
+    client->last_error = OPENAI_ERR_MEMORY;
+    return NULL;
 }
 
 void openai_embedding_response_free(OpenAI_EmbeddingResponse* resp) {
