@@ -4,10 +4,17 @@ project(c_openai VERSION 0.0.1 LANGUAGES C)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 
+if(NOT CMAKE_CONFIGURATION_TYPES AND NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE MinSizeRel CACHE STRING "Build type" FORCE)
+    set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS
+        Debug Release MinSizeRel RelWithDebInfo)
+endif()
+
 option(OPENAI_LOG_ENABLED "Enable logging (0/1)" 0)
 set(OPENAI_LOG_LEVEL 0 CACHE STRING "Log level (0=error 1=warn 2=info 3=debug)")
 option(OPENAI_USE_TLS "Enable HTTPS for lwIP backend (0/1)" 1)
 option(OPENAI_BUILD_EXAMPLES "Build example programs" OFF)
+option(OPENAI_BUILD_TESTS "Build project tests" OFF)
 set(OPENAI_TIMEOUT 30 CACHE STRING "HTTP request timeout in seconds")
 set(OPENAI_HTTP_BACKEND "OPENAI_BACKEND_CURL" CACHE STRING "HTTP backend")
 set_property(CACHE OPENAI_HTTP_BACKEND PROPERTY STRINGS
@@ -23,8 +30,14 @@ set(OPENAI_CORE_SRCS
 set(OPENAI_CURL_SRC ${CMAKE_CURRENT_SOURCE_DIR}/src/openai_http_curl.c)
 set(OPENAI_LWIP_SRC ${CMAKE_CURRENT_SOURCE_DIR}/src/openai_http_lwip.c)
 
+if(OPENAI_LOG_ENABLED)
+    set(OPENAI_LOG_ENABLED_VALUE 1)
+else()
+    set(OPENAI_LOG_ENABLED_VALUE 0)
+endif()
+
 set(COMMON_DEFS
-    OPENAI_LOG_ENABLED=${OPENAI_LOG_ENABLED}
+    OPENAI_LOG_ENABLED=${OPENAI_LOG_ENABLED_VALUE}
     OPENAI_LOG_LEVEL=${OPENAI_LOG_LEVEL}
     OPENAI_TIMEOUT=${OPENAI_TIMEOUT}
 )
@@ -101,16 +114,68 @@ if(OPENAI_HTTP_BACKEND STREQUAL "OPENAI_BACKEND_BOTH" OR
         ${MBEDTLS_EXTRA_INCS}
     )
     target_compile_options(openai_lwip PRIVATE -w -std=gnu11)
-    target_compile_definitions(openai_lwip PRIVATE
+    set(OPENAI_LWIP_DEFS
         ${COMMON_DEFS}
         OPENAI_USE_LWIP=1
-        LWIP_ALTCP=1
-        LWIP_ALTCP_TLS=1
-        LWIP_ALTCP_TLS_MBEDTLS=1
         OPENAI_USE_TLS=${OPENAI_USE_TLS_VALUE}
     )
-    if(WIN32)
-        target_compile_definitions(openai_lwip PRIVATE LWIP_TIMEVAL_PRIVATE=0)
+    if(OPENAI_USE_TLS)
+        list(APPEND OPENAI_LWIP_DEFS
+            LWIP_ALTCP=1
+            LWIP_ALTCP_TLS=1
+            LWIP_ALTCP_TLS_MBEDTLS=1
+        )
+    endif()
+    target_compile_definitions(openai_lwip PRIVATE ${OPENAI_LWIP_DEFS})
+
+    if(NOT OPENAI_USE_TLS)
+        # The bundled compile-check lwipopts.h enables TLS. Load lwIP options
+        # once, then remove the TLS feature macros before compiling this target.
+        # Real integrations should likewise leave these macros undefined when
+        # OPENAI_USE_TLS is disabled.
+        set(OPENAI_LWIP_NO_TLS_HEADER
+            "${CMAKE_CURRENT_BINARY_DIR}/generated/openai_lwip_no_tls.h")
+        file(GENERATE OUTPUT "${OPENAI_LWIP_NO_TLS_HEADER}" CONTENT
+"#include \"lwip/opt.h\"\n#undef LWIP_ALTCP_TLS\n#undef LWIP_ALTCP_TLS_MBEDTLS\n")
+        target_compile_options(openai_lwip PRIVATE
+            $<$<COMPILE_LANGUAGE:C>:-include>
+            $<$<COMPILE_LANGUAGE:C>:${OPENAI_LWIP_NO_TLS_HEADER}>
+        )
+    endif()
+endif()
+
+if(OPENAI_BUILD_TESTS)
+    enable_testing()
+    add_executable(core_api_tests
+        tests/core_api_tests.c
+        ${OPENAI_CORE_SRCS}
+    )
+    target_include_directories(core_api_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_compile_definitions(core_api_tests PRIVATE ${COMMON_DEFS})
+    if(UNIX)
+        target_link_libraries(core_api_tests PRIVATE m)
+    endif()
+    add_test(NAME core_api_tests COMMAND core_api_tests)
+
+    if(TARGET openai_lwip AND NOT OPENAI_USE_TLS)
+        add_executable(openai_lwip_no_tls_link tests/lwip_no_tls_link.c)
+        target_include_directories(openai_lwip_no_tls_link PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/include
+            ${CMAKE_CURRENT_SOURCE_DIR}/third_party/lwip_port
+            ${LWIP_INCLUDE_DIR})
+        target_link_libraries(openai_lwip_no_tls_link PRIVATE openai_lwip)
+        add_test(NAME openai_lwip_no_tls_link COMMAND openai_lwip_no_tls_link)
+
+        add_executable(openai_lwip_transport_tests
+            tests/lwip_transport_tests.c)
+        target_include_directories(openai_lwip_transport_tests PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/include
+            ${CMAKE_CURRENT_SOURCE_DIR}/third_party/lwip_port
+            ${LWIP_INCLUDE_DIR})
+        target_link_libraries(openai_lwip_transport_tests PRIVATE openai_lwip)
+        add_test(NAME openai_lwip_transport_tests
+            COMMAND openai_lwip_transport_tests)
     endif()
 endif()
 
@@ -123,7 +188,8 @@ endif()
 if(TARGET openai_lwip)
     message(STATUS "  Output: libopenai_lwip.a  (lwIP backend)")
 endif()
-message(STATUS "  Logging: OPENAI_LOG_ENABLED=${OPENAI_LOG_ENABLED} Level=${OPENAI_LOG_LEVEL}")
+message(STATUS "  Build type: ${CMAKE_BUILD_TYPE}")
+message(STATUS "  Logging: OPENAI_LOG_ENABLED=${OPENAI_LOG_ENABLED_VALUE} Level=${OPENAI_LOG_LEVEL}")
 message(STATUS "  TLS: OPENAI_USE_TLS=${OPENAI_USE_TLS_VALUE}")
 message(STATUS "  Timeout: OPENAI_TIMEOUT=${OPENAI_TIMEOUT}s")
 message(STATUS "==============================================")

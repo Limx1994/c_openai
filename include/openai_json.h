@@ -15,9 +15,14 @@
 /* JSON node for DOM-style parsing */
 struct OpenAI_JSONNode {
     char* key;
+    size_t key_length;
     char* string_value;
+    size_t string_length;
     double number_value;
     int is_number;
+    int is_boolean;
+    int boolean_value;
+    int is_null;
     int is_array;
     int is_object;
     void* children;  /* OpenAI_JSONNode* array */

@@ -1,284 +1,179 @@
-#!/bin/bash
-# Build script for lwIP backend (embedded/STM32)
-# Uses ARM GCC from STM32CubeIDE
-set -e
+#!/usr/bin/env bash
+# Cross-build the C-OpenAI lwIP backend archive.
+#
+# This script intentionally does not fabricate a sys_arch implementation or
+# claim to produce runnable firmware. A real lwIP Socket API integration needs
+# an RTOS-backed lwIP port, network driver, and (for HTTPS) mbedTLS libraries.
+set -euo pipefail
 
-# ============================================================
-# Toolchain paths (STM32CubeIDE)
-# ============================================================
-ARM_GCC="D:/APPS/st32ide/STM32CubeIDE_2.1.1/STM32CubeIDE/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.14.3.rel1.win32_1.0.100.202602081740/tools/bin/arm-none-eabi-gcc.exe"
-ARM_AR="D:/APPS/st32ide/STM32CubeIDE_2.1.1/STM32CubeIDE/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.14.3.rel1.win32_1.0.100.202602081740/tools/bin/arm-none-eabi-ar.exe"
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+ROOT="${ROOT:-$SCRIPT_DIR}"
+BUILD="${BUILD_DIR:-$ROOT/build_lwip}"
+JOBS="${JOBS:-10}"
+BUILD_TYPE="${BUILD_TYPE:-MinSizeRel}"
+OPENAI_USE_TLS="${OPENAI_USE_TLS:-1}"
+CMAKE_BIN="${CMAKE:-cmake}"
+MCU_FLAGS="${MCU_FLAGS:--mcpu=cortex-m4 -mthumb -mfloat-abi=hard -mfpu=fpv4-sp-d16}"
+read -r -a mcu_flag_args <<< "$MCU_FLAGS"
 
-# Project root (junction to avoid spaces)
-ROOT="E:/c_openai"
-BUILD="$ROOT/build_lwip"
+case "$JOBS" in
+    ''|*[!0-9]*) echo "ERROR: JOBS must be an integer >= 10" >&2; exit 2 ;;
+esac
+if [ "$JOBS" -lt 10 ]; then
+    echo "ERROR: JOBS must be >= 10 (received $JOBS)" >&2
+    exit 2
+fi
+if [ "$OPENAI_USE_TLS" != 0 ] && [ "$OPENAI_USE_TLS" != 1 ]; then
+    echo "ERROR: OPENAI_USE_TLS must be 0 or 1" >&2
+    exit 2
+fi
 
-# MCU: Cortex-M4 (STM32F4)
-MCU_FLAGS="-mcpu=cortex-m4 -mthumb -mfloat-abi=hard -mfpu=fpv4-sp-d16"
+resolve_tool()
+{
+    if [ -x "$1" ]; then
+        printf '%s\n' "$1"
+    else
+        command -v "$1"
+    fi
+}
 
-# ============================================================
-# Create directories
-# ============================================================
-mkdir -p "$BUILD/lwip_core" "$BUILD/lwip_api" "$BUILD/lwip_sys"
-mkdir -p "$BUILD/mbedtls" "$BUILD/mbedtls_crypto"
-mkdir -p "$BUILD/openai" "$BUILD/lib" "$BUILD/arch"
+find_arm_tool()
+{
+    tool_name="$1"
+    explicit_path="$2"
+    if [ -n "$explicit_path" ]; then
+        resolve_tool "$explicit_path"
+        return
+    fi
+    if [ -n "${ARM_TOOLCHAIN_BIN:-}" ]; then
+        resolve_tool "$ARM_TOOLCHAIN_BIN/$tool_name"
+        return
+    fi
+    if command -v "$tool_name" >/dev/null 2>&1; then
+        command -v "$tool_name"
+        return
+    fi
 
-# ============================================================
-# Generate lwipopts.h
-# ============================================================
-echo "=== Step 0: Generating lwipopts.h ==="
-cat > "$BUILD/lwipopts.h" << 'EOF'
-#ifndef LWIP_LWIPOPTS_H
-#define LWIP_LWIPOPTS_H
+    for candidate in \
+        D:/APPS/st32ide/STM32CubeIDE_*/STM32CubeIDE/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.*/tools/bin/"$tool_name".exe \
+        C:/ST/STM32CubeIDE_*/STM32CubeIDE/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.*/tools/bin/"$tool_name".exe; do
+        if [ -x "$candidate" ]; then
+            printf '%s\n' "$candidate"
+            return
+        fi
+    done
+    return 1
+}
 
-#define NO_SYS 0
-#define LWIP_SOCKET 1
-#define LWIP_NETCONN 0
-#define LWIP_NETIF_API 0
-#define LWIP_PROVIDE_ERRNO 1
-#define LWIP_TIMEVAL_PRIVATE 1
+ARM_GCC_BIN="$(find_arm_tool arm-none-eabi-gcc "${ARM_GCC:-}")" || {
+    echo "ERROR: ARM GCC not found; set ARM_GCC or ARM_TOOLCHAIN_BIN" >&2
+    exit 1
+}
+ARM_AR_BIN="$(find_arm_tool arm-none-eabi-ar "${ARM_AR:-}")" || {
+    echo "ERROR: ARM ar not found; set ARM_AR or ARM_TOOLCHAIN_BIN" >&2
+    exit 1
+}
+ARM_NM_BIN="$(find_arm_tool arm-none-eabi-nm "${ARM_NM:-}")" || {
+    echo "ERROR: ARM nm not found; set ARM_NM or ARM_TOOLCHAIN_BIN" >&2
+    exit 1
+}
+command -v "$CMAKE_BIN" >/dev/null 2>&1 || {
+    echo "ERROR: CMake not found; set CMAKE" >&2
+    exit 1
+}
 
-#define LWIP_IPV4 1
-#define LWIP_IPV6 0
-#define LWIP_TCP 1
-#define LWIP_UDP 1
-#define LWIP_DNS 1
-
-#define MEM_SIZE (16 * 1024)
-#define MEMP_NUM_PBUF 16
-#define MEMP_NUM_TCP_PCB 8
-#define MEMP_NUM_TCP_PCB_LISTEN 4
-#define MEMP_NUM_TCP_SEG 16
-#define MEMP_NUM_SYS_TIMEOUT 10
-
-#define TCP_MSS 1460
-#define TCP_SND_BUF (4 * TCP_MSS)
-#define TCP_SND_QUEUELEN (2 * TCP_SND_BUF / TCP_MSS)
-#define TCP_WND (4 * TCP_MSS)
-
-#define LWIP_ALTCP 1
-#define LWIP_ALTCP_TLS 1
-#define LWIP_ALTCP_TLS_MBEDTLS 1
-#define MEMP_NUM_ALTCP_PCB 4
-#define MEMP_NUM_ALTCP_TLS_PCB 4
-
-#define CHECKSUM_GEN_IP 0
-#define CHECKSUM_GEN_UDP 0
-#define CHECKSUM_GEN_TCP 0
-#define CHECKSUM_CHECK_IP 0
-#define CHECKSUM_CHECK_UDP 0
-#define CHECKSUM_CHECK_TCP 0
-#define LWIP_STATS 0
-#define LWIP_DEBUG 0
-
-#endif
-EOF
-
-# Generate arch/cc.h
-cat > "$BUILD/arch/cc.h" << 'EOF'
-#ifndef LWIP_ARCH_CC_H
-#define LWIP_ARCH_CC_H
-#include <errno.h>
-#include <stdint.h>
-#include <limits.h>
-typedef uint8_t u8_t;
-typedef int8_t s8_t;
-typedef uint16_t u16_t;
-typedef int16_t s16_t;
-typedef uint32_t u32_t;
-typedef int32_t s32_t;
-typedef uintptr_t mem_ptr_t;
-#define PACK_STRUCT_BEGIN
-#define PACK_STRUCT_END
-#define PACK_STRUCT_STRUCT __attribute__((packed))
-#define LWIP_PLATFORM_DIAG(x)
-#define LWIP_PLATFORM_ASSERT(x)
-#endif
-EOF
-
-# Generate arch/sys_arch.h
-cat > "$BUILD/arch/sys_arch.h" << 'EOF'
-#ifndef LWIP_ARCH_SYS_ARCH_H
-#define LWIP_ARCH_SYS_ARCH_H
-typedef int sys_prot_t;
-typedef void* sys_sem_t;
-typedef void* sys_mutex_t;
-typedef void* sys_mbox_t;
-typedef void* sys_thread_t;
-#endif
-EOF
-
-# Generate sys_arch.c (stub for bare-metal)
-cat > "$BUILD/sys_arch.c" << 'EOF'
-#include "lwip/sys.h"
-#include "arch/cc.h"
-#include "arch/sys_arch.h"
-#include <stdlib.h>
-
-sys_prot_t sys_arch_protect(void) { return 0; }
-void sys_arch_unprotect(sys_prot_t pval) { (void)pval; }
-err_t sys_sem_new(sys_sem_t *sem, u8_t count) { *sem = malloc(4); return ERR_OK; }
-void sys_sem_free(sys_sem_t *sem) { if (*sem) free(*sem); }
-void sys_sem_signal(sys_sem_t *sem) {}
-u32_t sys_arch_sem_wait(sys_sem_t *sem, u32_t timeout) { (void)sem; (void)timeout; return 0; }
-err_t sys_mutex_new(sys_mutex_t *mutex) { *mutex = malloc(4); return ERR_OK; }
-void sys_mutex_free(sys_mutex_t *mutex) { if (*mutex) free(*mutex); }
-void sys_mutex_lock(sys_mutex_t *mutex) {}
-void sys_mutex_unlock(sys_mutex_t *mutex) {}
-err_t sys_mbox_new(sys_mbox_t *mbox, int size) { (void)size; *mbox = malloc(4); return ERR_OK; }
-void sys_mbox_free(sys_mbox_t *mbox) { if (*mbox) free(*mbox); }
-void sys_mbox_post(sys_mbox_t *mbox, void *msg) { (void)mbox; (void)msg; }
-err_t sys_mbox_trypost(sys_mbox_t *mbox, void *msg) { (void)mbox; (void)msg; return ERR_OK; }
-u32_t sys_arch_mbox_fetch(sys_mbox_t *mbox, void **msg, u32_t timeout) { (void)mbox; (void)msg; (void)timeout; return 0; }
-sys_thread_t sys_thread_new(const char *name, lwip_thread_fn thread, void *arg, int stacksize, int prio) { (void)name; (void)thread; (void)arg; (void)stacksize; (void)prio; return NULL; }
-u32_t sys_jiffies(void) { return 0; }
-u32_t sys_now(void) { return 0; }
-EOF
-
-# ============================================================
-# Common flags
-# ============================================================
-LWIP_DEFS="-DLWIP_IPV4=1 -DLWIP_IPV6=0 -DLWIP_UDP=1 -DLWIP_TCP=1 -DLWIP_SOCKET=1 -DNO_SYS=0 -DLWIP_TIMEVAL_PRIVATE=1"
-LWIP_INCS="-I$ROOT/third_party/lwip/src/include -I$BUILD -I$BUILD/arch"
-LWIP_CFLAGS="-std=gnu11 -w $MCU_FLAGS"
-
-MBEDTLS_DEFS="-DMBEDTLS_CONFIG_FILE=\"mbedtls_config.h\""
-MBEDTLS_INCS="-I$ROOT/third_party/mbedtls/include \
--I$ROOT/third_party/mbedtls/tf-psa-crypto/include \
--I$ROOT/third_party/mbedtls/tf-psa-crypto/core \
--I$ROOT/third_party/mbedtls/tf-psa-crypto/extras \
--I$ROOT/third_party/mbedtls/tf-psa-crypto/utilities \
--I$ROOT/third_party/mbedtls/tf-psa-crypto/drivers/builtin/include \
--I$ROOT/third_party/mbedtls/tf-psa-crypto/drivers/builtin/src \
--I$ROOT/third_party/mbedtls/library"
-MBEDTLS_CFLAGS="-std=gnu11 -w $MCU_FLAGS"
-
-OPENAI_DEFS="-DOPENAI_USE_LWIP=1 -DLWIP_ALTCP=1 -DLWIP_ALTCP_TLS=1 -DLWIP_ALTCP_TLS_MBEDTLS=1"
-OPENAI_INCS="-I$ROOT/include \
--I$ROOT/third_party/lwip/src/include \
--I$ROOT/third_party/mbedtls/include \
--I$ROOT/third_party/mbedtls/tf-psa-crypto/include \
--I$ROOT/third_party/mbedtls/tf-psa-crypto/core \
--I$ROOT/third_party/mbedtls/tf-psa-crypto/extras \
--I$ROOT/third_party/mbedtls/tf-psa-crypto/utilities \
--I$ROOT/third_party/mbedtls/tf-psa-crypto/drivers/builtin/include \
--I$ROOT/third_party/mbedtls/tf-psa-crypto/drivers/builtin/src \
--I$ROOT/third_party/mbedtls/library \
--I$BUILD -I$BUILD/arch"
-OPENAI_CFLAGS="-std=gnu11 -w $MCU_FLAGS"
-
-# ============================================================
-# STEP 1: Compile lwIP
-# ============================================================
-echo ""
-echo "=== Step 1: Compiling lwIP ==="
-
-LWIP_CORE_SRCS="def.c inet_chksum.c init.c ip.c mem.c memp.c netif.c pbuf.c raw.c stats.c sys.c tcp.c tcp_in.c tcp_out.c timeouts.c udp.c"
-LWIP_IPV4_SRCS="ipv4/icmp.c ipv4/ip4.c ipv4/ip4_addr.c"
-LWIP_API_SRCS="api_lib.c api_msg.c err.c netbuf.c netdb.c sockets.c tcpip.c"
-
-LWIP_OBJS=""
-
-for src in $LWIP_CORE_SRCS $LWIP_IPV4_SRCS; do
-    basename=$(echo "$src" | sed 's|/|_|g; s|\.c$|.o|')
-    objpath="$BUILD/lwip_core/$basename"
-    srcpath="$ROOT/third_party/lwip/src/core/$src"
-    [ ! -f "$srcpath" ] && echo "  SKIP: $src" && continue
-    echo "  [$src]"
-    "$ARM_GCC" $LWIP_DEFS $LWIP_INCS $LWIP_CFLAGS -c "$srcpath" -o "$objpath"
-    LWIP_OBJS="$LWIP_OBJS $objpath"
+required_files="
+CMakeLists.txt
+src/openai_client.c
+src/openai_json.c
+src/openai_http_lwip.c
+third_party/lwip/src/include/lwip/sockets.h
+third_party/lwip_port/lwipopts.h
+third_party/lwip_port/arch/cc.h
+"
+if [ "$OPENAI_USE_TLS" = 1 ]; then
+    required_files="$required_files
+third_party/lwip/src/include/lwip/altcp_tls.h
+third_party/mbedtls/include/mbedtls/ssl.h
+third_party/mbedtls/tf-psa-crypto/include/psa/crypto.h
+"
+fi
+for required in $required_files; do
+    if [ ! -f "$ROOT/$required" ]; then
+        echo "ERROR: missing required source/header: $ROOT/$required" >&2
+        exit 1
+    fi
 done
 
-for src in $LWIP_API_SRCS; do
-    basename=$(echo "$src" | sed 's|\.c$|.o|')
-    objpath="$BUILD/lwip_api/$basename"
-    srcpath="$ROOT/third_party/lwip/src/api/$src"
-    [ ! -f "$srcpath" ] && echo "  SKIP: $src" && continue
-    echo "  [api/$src]"
-    "$ARM_GCC" $LWIP_DEFS $LWIP_INCS $LWIP_CFLAGS -c "$srcpath" -o "$objpath"
-    LWIP_OBJS="$LWIP_OBJS $objpath"
+generator_args=()
+if [ -n "${CMAKE_GENERATOR:-}" ]; then
+    generator_args=(-G "$CMAKE_GENERATOR")
+elif command -v mingw32-make >/dev/null 2>&1; then
+    generator_args=(-G "MinGW Makefiles")
+fi
+
+echo "=== C-OpenAI lwIP archive build ==="
+echo "  Root:       $ROOT"
+echo "  Build:      $BUILD"
+echo "  Compiler:   $ARM_GCC_BIN"
+echo "  Build type: $BUILD_TYPE"
+echo "  MCU flags:  $MCU_FLAGS"
+echo "  TLS:        $OPENAI_USE_TLS"
+echo "  Parallel:   $JOBS"
+
+"$CMAKE_BIN" -S "$ROOT" -B "$BUILD" "${generator_args[@]}" \
+    -DCMAKE_SYSTEM_NAME=Generic \
+    -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY \
+    -DCMAKE_C_COMPILER="$ARM_GCC_BIN" \
+    -DCMAKE_AR="$ARM_AR_BIN" \
+    -DCMAKE_C_FLAGS="$MCU_FLAGS" \
+    -DCMAKE_BUILD_TYPE="$BUILD_TYPE" \
+    -DOPENAI_HTTP_BACKEND=OPENAI_BACKEND_LWIP \
+    -DOPENAI_USE_TLS="$OPENAI_USE_TLS" \
+    -DOPENAI_BUILD_EXAMPLES=OFF \
+    -DOPENAI_BUILD_TESTS=OFF \
+    -DLWIP_INCLUDE_DIR="$ROOT/third_party/lwip/src/include" \
+    -DMBEDTLS_INCLUDE_DIR="$ROOT/third_party/mbedtls"
+
+"$CMAKE_BIN" --build "$BUILD" --target openai_lwip --parallel "$JOBS"
+
+OPENAI_A="$BUILD/libopenai_lwip.a"
+if [ ! -s "$OPENAI_A" ]; then
+    echo "ERROR: expected archive was not generated: $OPENAI_A" >&2
+    exit 1
+fi
+
+archive_members="$($ARM_AR_BIN t "$OPENAI_A")"
+for expected in openai_client openai_json openai_http_lwip; do
+    if ! printf '%s\n' "$archive_members" | grep -q "$expected"; then
+        echo "ERROR: archive is missing object for $expected" >&2
+        exit 1
+    fi
 done
 
-# sys_arch stub
-echo "  [sys_arch.c]"
-"$ARM_GCC" $LWIP_DEFS $LWIP_INCS $LWIP_CFLAGS -c "$BUILD/sys_arch.c" -o "$BUILD/lwip_sys/sys_arch.o"
-LWIP_OBJS="$LWIP_OBJS $BUILD/lwip_sys/sys_arch.o"
+if [ -n "${OPENAI_LINK_OBJECT:-}" ] || [ -n "${OPENAI_PLATFORM_LINK_RSP:-}" ]; then
+    if [ -z "${OPENAI_LINK_OBJECT:-}" ] || [ -z "${OPENAI_PLATFORM_LINK_RSP:-}" ]; then
+        echo "ERROR: set both OPENAI_LINK_OBJECT and OPENAI_PLATFORM_LINK_RSP" >&2
+        exit 1
+    fi
+    if [ ! -f "$OPENAI_LINK_OBJECT" ] || [ ! -f "$OPENAI_PLATFORM_LINK_RSP" ]; then
+        echo "ERROR: final-link object or response file does not exist" >&2
+        exit 1
+    fi
+    if ! "$ARM_NM_BIN" -u "$OPENAI_LINK_OBJECT" | grep -q 'openai_'; then
+        echo "ERROR: OPENAI_LINK_OBJECT must reference at least one openai_* symbol" >&2
+        exit 1
+    fi
 
-LWIP_A="$BUILD/lib/liblwip.a"
-echo "  -> liblwip.a"
-rm -f "$LWIP_A"
-"$ARM_AR" rc "$LWIP_A" $LWIP_OBJS
+    LINK_ELF="${OPENAI_LINK_ELF:-$BUILD/openai_lwip_link_check.elf}"
+    "$ARM_GCC_BIN" "${mcu_flag_args[@]}" "$OPENAI_LINK_OBJECT" "$OPENAI_A" \
+        "@$OPENAI_PLATFORM_LINK_RSP" -Wl,-Map="$LINK_ELF.map" -o "$LINK_ELF"
+    echo "  Final platform link verified: $LINK_ELF"
+else
+    echo "  Final platform link: NOT VERIFIED"
+    echo "  Supply OPENAI_LINK_OBJECT and OPENAI_PLATFORM_LINK_RSP to verify"
+    echo "  against a real RTOS/lwIP/mbedTLS platform link."
+fi
 
-# ============================================================
-# STEP 2: Compile mbedTLS
-# ============================================================
-echo ""
-echo "=== Step 2: Compiling mbedTLS ==="
-
-MBEDTLS_LIB_SRCS="debug.c ssl_cache.c ssl_ciphersuites.c ssl_client.c ssl_cookie.c ssl_msg.c ssl_ticket.c ssl_tls.c ssl_tls12_client.c ssl_tls12_server.c ssl_tls13_client.c ssl_tls13_server.c ssl_tls13_generic.c ssl_tls13_keys.c"
-CRYPTO_SRCS="aes.c bignum.c bignum_core.c bignum_mod.c bignum_mod_raw.c cipher.c cipher_wrap.c cmac.c ctr_drbg.c ecdsa.c ecp.c ecp_curves.c entropy.c entropy_poll.c hash.c hmac_drbg.c md.c md_wrap.c nist_kw.c oid.c pem.c pk.c pk_wrap.c pk_ec.c pk_rsa.c pkcs5.c platform.c platform_util.c rsa.c sha256.c sha512.c threading.c timing.c"
-
-MBEDTLS_OBJS=""
-for src in $MBEDTLS_LIB_SRCS; do
-    basename=$(echo "$src" | sed 's|\.c$|.o|')
-    objpath="$BUILD/mbedtls/$basename"
-    srcpath="$ROOT/third_party/mbedtls/library/$src"
-    [ ! -f "$srcpath" ] && echo "  SKIP: library/$src" && continue
-    echo "  [library/$src]"
-    "$ARM_GCC" $MBEDTLS_DEFS $MBEDTLS_INCS $MBEDTLS_CFLAGS -c "$srcpath" -o "$objpath"
-    MBEDTLS_OBJS="$MBEDTLS_OBJS $objpath"
-done
-
-for src in $CRYPTO_SRCS; do
-    basename=$(echo "$src" | sed 's|\.c$|.o|')
-    objpath="$BUILD/mbedtls_crypto/$basename"
-    srcpath="$ROOT/third_party/mbedtls/tf-psa-crypto/drivers/builtin/src/$src"
-    [ ! -f "$srcpath" ] && echo "  SKIP: crypto/$src" && continue
-    echo "  [crypto/$src]"
-    "$ARM_GCC" $MBEDTLS_DEFS $MBEDTLS_INCS $MBEDTLS_CFLAGS -c "$srcpath" -o "$objpath"
-    MBEDTLS_OBJS="$MBEDTLS_OBJS $objpath"
-done
-
-MBEDTLS_A="$BUILD/lib/libmbedtls.a"
-echo "  -> libmbedtls.a"
-rm -f "$MBEDTLS_A"
-"$ARM_AR" rc "$MBEDTLS_A" $MBEDTLS_OBJS
-
-# ============================================================
-# STEP 3: Compile openai
-# ============================================================
-echo ""
-echo "=== Step 3: Compiling openai ==="
-
-OPENAI_SRCS="openai_client.c openai_json.c openai_http_lwip.c"
-OPENAI_OBJS=""
-for src in $OPENAI_SRCS; do
-    objname=$(echo "$src" | sed 's|\.c$|.o|')
-    objpath="$BUILD/openai/$objname"
-    srcpath="$ROOT/src/$src"
-    echo "  [$src]"
-    "$ARM_GCC" $OPENAI_DEFS $OPENAI_INCS $OPENAI_CFLAGS -c "$srcpath" -o "$objpath"
-    OPENAI_OBJS="$OPENAI_OBJS $objpath"
-done
-
-OPENAI_A="$BUILD/lib/libopenai.a"
-echo "  -> libopenai.a"
-rm -f "$OPENAI_A"
-"$ARM_AR" rc "$OPENAI_A" $OPENAI_OBJS
-
-# ============================================================
-# Summary
-# ============================================================
-echo ""
-echo "========================================"
-echo "  Build Complete!"
-echo "========================================"
-echo "  lwIP objects:   $(echo $LWIP_OBJS | wc -w) files"
-echo "  mbedTLS objects: $(echo $MBEDTLS_OBJS | wc -w) files"
-echo "  openai objects:  $(echo $OPENAI_OBJS | wc -w) files"
-echo ""
-echo "  Libraries:"
-ls -la "$BUILD/lib/"*.a
-echo ""
-echo "  Link these into your STM32 project with:"
-echo "    -lopenai -lmbedtls -llwip -lc -lm -lnosys"
+echo "=== Archive build complete ==="
+echo "  $OPENAI_A"

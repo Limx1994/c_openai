@@ -125,6 +125,10 @@ Using the build script (recommended, requires ARM GCC from STM32CubeIDE):
 bash build_lwip.sh
 ```
 
+This script builds only `libopenai_lwip.a`. Your target project must provide
+the real RTOS/lwIP/mbedTLS port and network driver; the script reports the
+final firmware link as unverified unless platform link inputs are supplied.
+
 Or with CMake:
 
 ```bash
@@ -161,12 +165,6 @@ Configure CMake and edit `include/openai_config.h` to customize:
 ```c
 #define OPENAI_TIMEOUT 30          // HTTP timeout in seconds
 #define OPENAI_USE_TLS 1           // for lwIP HTTPS (requires mbedTLS)
-```
-
-`OPENAI_JSON_MAX_DEPTH` controls maximum nesting depth for JSON serialization (default 64). Define before including `openai_json.h` to override.
-
-```c
-#define OPENAI_JSON_MAX_DEPTH 32   // Reduce to save stack on embedded
 ```
 
 `OPENAI_HTTP_BACKEND` is a CMake option. Supported values are
@@ -338,7 +336,7 @@ openai_client_set_base_url(client, "https://your-proxy.com/v1");
 | ---------------------------------------- | ------------------------------------------ |
 | `openai_chat_create_stream(client, req)` | Create streaming chat request              |
 | `openai_stream_read(stream, event)`      | Read next event from stream                |
-| `openai_stream_event_free(event)`        | Free event content/role/stop_reason/thinking fields |
+| `openai_stream_event_free(event)`        | Free event content/role/stop_reason/thinking/signature/usage fields |
 | `openai_stream_close(stream)`            | Close stream and free resources            |
 
 The `event_type` field distinguishes event categories during streaming:
@@ -350,6 +348,7 @@ The `event_type` field distinguishes event categories during streaming:
 | `OPENAI_EVENT_TOOL_USE_START`     | Anthropic `tool_use` block start                 |
 | `OPENAI_EVENT_TOOL_USE_DELTA`     | Anthropic `tool_use` delta                       |
 | `OPENAI_EVENT_TOOL_USE_STOP`      | Anthropic `tool_use` block end                   |
+| `OPENAI_EVENT_THINKING_SIG`       | Anthropic Extended Thinking signature delta      |
 
 Check `event->event_type` to switch between text deltas, OpenAI tool_call deltas, and Anthropic tool_use events. `content` holds text or `partial_json` for tool_use blocks.
 

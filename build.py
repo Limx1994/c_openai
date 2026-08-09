@@ -10,6 +10,8 @@ import glob
 import shutil
 import subprocess
 import argparse
+import shlex
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 # ============================================================
@@ -41,6 +43,9 @@ CURL_SRC = SRC_DIR / "openai_http_curl.c"
 # ============================================================
 def find_arm_toolchain():
     """在 STM32CubeIDE 插件目录中查找 ARM GCC 工具链"""
+    compiler = shutil.which("arm-none-eabi-gcc")
+    if compiler:
+        return Path(compiler).parent
     for base in STM32IDE_SEARCH_PATHS:
         if not os.path.exists(base):
             continue
@@ -123,16 +128,18 @@ def run_cmd(cmd, verbose=False):
         print(f"  > {' '.join(str(c) for c in cmd)}")
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
-        print(f"  [ERROR] {result.stderr.strip()}")
+        output = "\n".join(part.strip() for part in (result.stdout, result.stderr)
+                           if part.strip())
+        print(f"  [ERROR] {output}")
         return False
     return True
 
 
-def compile_file(compiler, src, obj, includes, defines, verbose=False):
+def compile_file(compiler, src, obj, includes, defines, cflags, verbose=False):
     """编译单个 .c 文件为 .o"""
     cmd = [
         str(compiler),
-        "-c", "-w", "-std=gnu11",
+        "-c", "-w", "-std=gnu11", *cflags,
         "-o", str(obj),
         str(src),
     ]
@@ -141,6 +148,35 @@ def compile_file(compiler, src, obj, includes, defines, verbose=False):
     for d, v in defines.items():
         cmd.extend([f"-D{d}={v}"])
     return run_cmd(cmd, verbose)
+
+
+def compile_sources(compiler, sources, obj_dir, includes, defines,
+                    cflags, jobs, verbose=False):
+    """并行编译源文件，返回按输入顺序排列的目标文件列表。"""
+    work = [(src, obj_dir / (src.stem + ".o")) for src in sources]
+    results = {}
+    with ThreadPoolExecutor(max_workers=jobs) as executor:
+        futures = {
+            executor.submit(compile_file, compiler, src, obj, includes,
+                            defines, cflags, verbose): (src, obj)
+            for src, obj in work
+        }
+        for future in as_completed(futures):
+            src, obj = futures[future]
+            try:
+                ok = future.result()
+            except Exception as exc:
+                print(f"  [ERROR] 编译 {src.name} 时发生异常: {exc}")
+                ok = False
+            print(f"  编译 {src.name} ... {'OK' if ok else 'FAIL'}")
+            results[src] = (ok, obj)
+
+    failed = [src for src, _ in work if not results.get(src, (False, None))[0]]
+    if failed:
+        print(f"  [ERROR] {len(failed)} 个源文件编译失败: "
+              + ", ".join(src.name for src in failed))
+        return None
+    return [results[src][1] for src, _ in work]
 
 
 def create_static_lib(archiver, obj_files, output, verbose=False):
@@ -152,14 +188,23 @@ def create_static_lib(archiver, obj_files, output, verbose=False):
     return run_cmd(cmd, verbose)
 
 
-def build_lwip(toolchain_dir, lwip_inc, lwipopts_dir, mbedtls_inc, defines, arch_dir=None, verbose=False):
+def find_tool(toolchain_dir, name):
+    """在工具链目录中查找带或不带 .exe 后缀的程序。"""
+    for candidate in (toolchain_dir / name, toolchain_dir / f"{name}.exe"):
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def build_lwip(toolchain_dir, lwip_inc, lwipopts_dir, mbedtls_inc,
+                defines, cflags, jobs, arch_dir=None, verbose=False):
     """编译 lwIP 后端库"""
     print("\n[1/3] 编译 lwIP 后端 (libopenai_lwip.a)")
 
-    compiler = toolchain_dir / "arm-none-eabi-gcc.exe"
-    archiver = toolchain_dir / "arm-none-eabi-ar.exe"
-    if not compiler.exists():
-        print(f"  [ERROR] 找不到编译器: {compiler}")
+    compiler = find_tool(toolchain_dir, "arm-none-eabi-gcc")
+    archiver = find_tool(toolchain_dir, "arm-none-eabi-ar")
+    if not compiler or not archiver:
+        print(f"  [ERROR] ARM 工具链不完整: {toolchain_dir}")
         return False
 
     includes = [INC_DIR, lwip_inc, lwipopts_dir]
@@ -184,17 +229,11 @@ def build_lwip(toolchain_dir, lwip_inc, lwipopts_dir, mbedtls_inc, defines, arch
     obj_dir = BUILD_DIR / "lwip"
     obj_dir.mkdir(parents=True, exist_ok=True)
 
-    obj_files = []
     all_srcs = CORE_SRCS + [LWIP_SRC]
-    for src in all_srcs:
-        obj = obj_dir / (src.stem + ".o")
-        print(f"  编译 {src.name} ...", end=" ")
-        if compile_file(compiler, src, obj, includes, defines, verbose):
-            print("OK")
-            obj_files.append(obj)
-        else:
-            print("FAIL")
-            return False
+    obj_files = compile_sources(compiler, all_srcs, obj_dir, includes, defines,
+                                cflags, jobs, verbose)
+    if obj_files is None:
+        return False
 
     output = BUILD_DIR / "libopenai_lwip.a"
     print(f"  打包 {output.name} ...", end=" ")
@@ -217,29 +256,17 @@ def find_curl_include():
     return None
 
 
-def build_curl(toolchain_dir_or_none, defines, curl_inc_dir=None, verbose=False):
+def build_curl(defines, cflags, jobs, curl_inc_dir=None, verbose=False):
     """编译 libcurl 后端库"""
     print("\n[2/3] 编译 libcurl 后端 (libopenai_curl.a)")
 
-    # 查找 GCC
-    if toolchain_dir_or_none:
-        compiler = toolchain_dir_or_none / "arm-none-eabi-gcc.exe"
-        archiver = toolchain_dir_or_none / "arm-none-eabi-ar.exe"
-    else:
-        gcc_path = shutil.which("gcc") or shutil.which("cc")
-        if not gcc_path:
-            print("  [ERROR] 找不到系统 GCC")
-            return False
-        compiler = Path(gcc_path)
-        ar_path = shutil.which("ar")
-        if not ar_path:
-            print("  [ERROR] 找不到 ar 工具")
-            return False
-        archiver = Path(ar_path)
-
-    if not compiler.exists():
-        print(f"  [ERROR] 找不到编译器: {compiler}")
+    gcc_path = shutil.which("gcc") or shutil.which("cc")
+    ar_path = shutil.which("ar")
+    if not gcc_path or not ar_path:
+        print("  [ERROR] curl 后端需要 host GCC/cc 和 ar")
         return False
+    compiler = Path(gcc_path)
+    archiver = Path(ar_path)
 
     includes = [INC_DIR]
     if curl_inc_dir:
@@ -248,17 +275,11 @@ def build_curl(toolchain_dir_or_none, defines, curl_inc_dir=None, verbose=False)
     obj_dir = BUILD_DIR / "curl"
     obj_dir.mkdir(parents=True, exist_ok=True)
 
-    obj_files = []
     all_srcs = CORE_SRCS + [CURL_SRC]
-    for src in all_srcs:
-        obj = obj_dir / (src.stem + ".o")
-        print(f"  编译 {src.name} ...", end=" ")
-        if compile_file(compiler, src, obj, includes, defines, verbose):
-            print("OK")
-            obj_files.append(obj)
-        else:
-            print("FAIL")
-            return False
+    obj_files = compile_sources(compiler, all_srcs, obj_dir, includes, defines,
+                                cflags, jobs, verbose)
+    if obj_files is None:
+        return False
 
     output = BUILD_DIR / "libopenai_curl.a"
     print(f"  打包 {output.name} ...", end=" ")
@@ -291,11 +312,21 @@ def main():
                         help="禁用 lwIP TLS 支持")
     parser.add_argument("--log-level", type=int, default=0, choices=[0, 1, 2, 3],
                         help="日志级别 (0=error 1=warn 2=info 3=debug)")
+    parser.add_argument("--build-type", choices=["Debug", "Release", "MinSizeRel"],
+                        default="MinSizeRel",
+                        help="优化配置 (默认: MinSizeRel/-Os)")
+    parser.add_argument("--jobs", type=int, default=10,
+                        help="并行编译任务数，最小 10 (默认: 10)")
+    parser.add_argument("--mcu-flags", type=str,
+                        default="-mcpu=cortex-m4 -mthumb -mfloat-abi=hard -mfpu=fpv4-sp-d16",
+                        help="lwIP ARM 编译器的 MCU/ABI 参数")
     parser.add_argument("--clean", action="store_true",
                         help="清理构建目录")
     parser.add_argument("-v", "--verbose", action="store_true",
                         help="显示详细编译命令")
     args = parser.parse_args()
+    if args.jobs < 10:
+        parser.error("--jobs 必须大于或等于 10")
 
     # 清理
     if args.clean:
@@ -318,11 +349,14 @@ def main():
     if toolchain_dir:
         print(f"\nARM 工具链: {toolchain_dir}")
     else:
-        print("\n未找到 ARM 工具链，将使用系统 GCC")
+        print("\n未找到 ARM 工具链")
+    host_gcc = shutil.which("gcc") or shutil.which("cc")
+    print(f"Host C 编译器: {host_gcc or '未找到'}")
+    print(f"并行任务数: {args.jobs}")
 
     # 查找 lwIP
     lwip_inc = Path(args.lwip_include) if args.lwip_include else find_lwip_include()
-    lwipopts_dir = Path(args.lwipopts) if args.lwipopts else (find_lwipopts() or find_lwipopts_default())
+    lwipopts_dir = Path(args.lwipopts) if args.lwipopts else (find_lwipopts_default() or find_lwipopts())
     mbedtls_inc = Path(args.mbedtls) if args.mbedtls else find_mbedtls_include()
     arch_dir = find_lwip_arch_dir()
 
@@ -345,32 +379,49 @@ def main():
     lwip_defs = {
         **common_defs,
         "OPENAI_USE_LWIP": 1,
-        "LWIP_ALTCP": 1,
-        "LWIP_ALTCP_TLS": 1,
-        "LWIP_ALTCP_TLS_MBEDTLS": 1,
         "OPENAI_USE_TLS": 0 if args.no_tls else 1,
     }
+    if not args.no_tls:
+        lwip_defs.update({
+            "LWIP_ALTCP": 1,
+            "LWIP_ALTCP_TLS": 1,
+            "LWIP_ALTCP_TLS_MBEDTLS": 1,
+        })
 
     curl_defs = {
         **common_defs,
         "OPENAI_USE_TLS": 0 if args.no_tls else 1,
     }
 
+    optimization_flags = {
+        "Debug": ["-O0", "-g"],
+        "Release": ["-O2", "-DNDEBUG"],
+        "MinSizeRel": ["-Os", "-DNDEBUG"],
+    }[args.build_type]
+    lwip_cflags = shlex.split(args.mcu_flags) + optimization_flags
+
     BUILD_DIR.mkdir(parents=True, exist_ok=True)
 
-    success = True
+    results = {}
 
     # 编译 lwIP
     if args.backend in ("lwip", "all"):
         if not toolchain_dir:
-            print("\n[SKIP] lwIP 后端需要 ARM 工具链 (--toolchain)")
+            print("\n[ERROR] lwIP 后端需要 ARM 工具链 (--toolchain)")
+            results["lwip"] = False
         elif not lwip_inc:
-            print("\n[SKIP] lwIP 后端需要 lwIP 头文件 (--lwip-include)")
+            print("\n[ERROR] lwIP 后端需要 lwIP 头文件 (--lwip-include)")
+            results["lwip"] = False
         elif not lwipopts_dir:
-            print("\n[SKIP] lwIP 后端需要 lwipopts.h (--lwipopts)")
+            print("\n[ERROR] lwIP 后端需要 lwipopts.h (--lwipopts)")
+            results["lwip"] = False
+        elif not args.no_tls and not mbedtls_inc:
+            print("\n[ERROR] 启用 TLS 时 lwIP 后端需要 mbedTLS (--mbedtls)")
+            results["lwip"] = False
         else:
-            success = build_lwip(toolchain_dir, lwip_inc, lwipopts_dir, mbedtls_inc,
-                                 lwip_defs, arch_dir, args.verbose) and success
+            results["lwip"] = build_lwip(
+                toolchain_dir, lwip_inc, lwipopts_dir, mbedtls_inc,
+                lwip_defs, lwip_cflags, args.jobs, arch_dir, args.verbose)
 
     # 查找 curl 头文件
     curl_inc_dir = find_curl_include()
@@ -380,13 +431,16 @@ def main():
     # 编译 curl（仅支持系统 GCC，ARM 工具链缺少系统头文件）
     if args.backend in ("curl", "all"):
         if not curl_inc_dir:
-            print("\n[SKIP] libcurl 后端需要 curl 头文件 (third_party/libcurl/include)")
-        elif toolchain_dir and args.backend == "all":
-            print("\n[SKIP] libcurl 后端不支持 ARM 交叉编译（需要系统 GCC）")
+            print("\n[ERROR] libcurl 后端需要 curl 头文件 (third_party/libcurl/include)")
+            results["curl"] = False
         else:
-            success = build_curl(toolchain_dir, curl_defs, curl_inc_dir, args.verbose) and success
+            results["curl"] = build_curl(
+                curl_defs, optimization_flags, args.jobs, curl_inc_dir, args.verbose)
 
     # 结果
+    success_count = sum(1 for ok in results.values() if ok)
+    failure_count = sum(1 for ok in results.values() if not ok)
+    success = bool(results) and failure_count == 0
     print("\n" + "=" * 50)
     if success:
         print("  编译成功!")
@@ -396,6 +450,7 @@ def main():
             print(f"    {f.name}  ({size_kb:.1f} KB)")
     else:
         print("  编译失败!")
+    print(f"  后端结果: 成功 {success_count}, 失败 {failure_count}")
     print("=" * 50)
 
     return 0 if success else 1

@@ -159,7 +159,7 @@ third_party/mbedtls/library/     ← mbedTLS 库代码
 #define LWIP_LWIPOPTS_H
 
 /* ======================== 基础配置 ======================== */
-#define NO_SYS 0                    /* 0=使用操作系统（RTOS），1=裸机 */
+#define NO_SYS 0                    /* 必须：当前 Socket backend 需要 RTOS */
 #define LWIP_SOCKET 1               /* 必须启用 Socket API */
 #define LWIP_NETCONN 0              /* 可选：Netconn API */
 #define LWIP_NETIF_API 0
@@ -218,7 +218,7 @@ third_party/mbedtls/library/     ← mbedTLS 库代码
 
 | 配置项                | 推荐值         | 说明                                            |
 | ------------------ | ----------- | --------------------------------------------- |
-| `NO_SYS`           | `0`         | lwIP Socket API 需要系统支持。裸机需提供 `sys_arch.c` 桩函数 |
+| `NO_SYS`           | `0`         | **必须**。当前 backend 使用 lwIP Socket API，需要真实 RTOS 系统层 |
 | `LWIP_SOCKET`      | `1`         | **必须**。本库使用 POSIX Socket API                  |
 | `MEM_SIZE`         | 16384~32768 | lwIP 总堆内存（字节），取决于并发连接数和缓冲区需求                  |
 | `MEMP_NUM_TCP_PCB` | `4`         | 最大并发 TCP 连接控制块。API 调用为单请求，`1` 即可              |
@@ -267,22 +267,11 @@ typedef uintptr_t mem_ptr_t;
 
 ### 6.2 arch/sys_arch.h — 系统抽象类型
 
-#### 裸机（无 RTOS）
+当前 `openai_http_lwip.c` 使用 Socket API，因此只支持 `NO_SYS=0`。`sys_sem_t`、
+`sys_mutex_t`、`sys_mbox_t` 和 `sys_thread_t` 必须映射到真实 RTOS 对象；空指针或
+空操作桩不能驱动 lwIP 的 `tcpip_thread`。
 
-```c
-#ifndef LWIP_ARCH_SYS_ARCH_H
-#define LWIP_ARCH_SYS_ARCH_H
-
-typedef int sys_prot_t;
-typedef void* sys_sem_t;
-typedef void* sys_mutex_t;
-typedef void* sys_mbox_t;
-typedef void* sys_thread_t;
-
-#endif
-```
-
-#### FreeRTOS
+#### FreeRTOS 示例
 
 ```c
 #ifndef LWIP_ARCH_SYS_ARCH_H
@@ -303,57 +292,14 @@ typedef TaskHandle_t      sys_thread_t;
 
 ### 6.3 sys_arch.c — 系统抽象实现
 
-#### 裸机桩函数（最小实现）
+> **不支持 `NO_SYS=1` 裸机模式**：`NO_SYS=1` 禁用 Socket/Netconn API，不能用于
+> 当前 backend。不要用“始终成功”的 semaphore/mailbox 或返回 `NULL` 的
+> `sys_thread_new()` 桩函数绕过编译；它们不会创建 `tcpip_thread`，请求会永久阻塞。
+> 真正的裸机移植需要另写基于 lwIP raw API 的 HTTP backend。
 
-```c
-#include "lwip/sys.h"
-#include "arch/cc.h"
-#include "arch/sys_arch.h"
-#include <stdlib.h>
-
-sys_prot_t sys_arch_protect(void) { return 0; }
-void sys_arch_unprotect(sys_prot_t pval) { (void)pval; }
-
-err_t sys_sem_new(sys_sem_t *sem, u8_t count) {
-    *sem = malloc(4);
-    return ERR_OK;
-}
-void sys_sem_free(sys_sem_t *sem) { if (*sem) free(*sem); }
-void sys_sem_signal(sys_sem_t *sem) {}
-u32_t sys_arch_sem_wait(sys_sem_t *sem, u32_t timeout) {
-    (void)sem; (void)timeout; return 0;
-}
-
-err_t sys_mutex_new(sys_mutex_t *mutex) { *mutex = malloc(4); return ERR_OK; }
-void sys_mutex_free(sys_mutex_t *mutex) { if (*mutex) free(*mutex); }
-void sys_mutex_lock(sys_mutex_t *mutex) {}
-void sys_mutex_unlock(sys_mutex_t *mutex) {}
-
-err_t sys_mbox_new(sys_mbox_t *mbox, int size) {
-    (void)size; *mbox = malloc(4); return ERR_OK;
-}
-void sys_mbox_free(sys_mbox_t *mbox) { if (*mbox) free(*mbox); }
-void sys_mbox_post(sys_mbox_t *mbox, void *msg) { (void)mbox; (void)msg; }
-err_t sys_mbox_trypost(sys_mbox_t *mbox, void *msg) {
-    (void)mbox; (void)msg; return ERR_OK;
-}
-u32_t sys_arch_mbox_fetch(sys_mbox_t *mbox, void **msg, u32_t timeout) {
-    (void)mbox; (void)msg; (void)timeout; return 0;
-}
-
-sys_thread_t sys_thread_new(const char *name, lwip_thread_fn thread,
-    void *arg, int stacksize, int prio) {
-    (void)name; (void)thread; (void)arg; (void)stacksize; (void)prio;
-    return NULL;
-}
-
-/* 关键：必须返回有意义的时间值（毫秒） */
-extern uint32_t HAL_GetTick(void);  /* STM32 HAL */
-u32_t sys_jiffies(void) { return HAL_GetTick(); }
-u32_t sys_now(void) { return HAL_GetTick(); }
-```
-
-> **重要**：`sys_now()` 和 `sys_jiffies()` 必须返回正确的毫秒计时值。上面示例使用 STM32 的 `HAL_GetTick()`。如果你的平台有其他系统时钟，请替换。
+`NO_SYS=0` 的平台层必须至少提供可工作的临界区、semaphore、mutex、mailbox、
+thread 和毫秒时钟。`sys_thread_new()` 必须真正创建任务，等待函数必须遵守 timeout
+语义，`sys_now()`/`sys_jiffies()` 必须单调返回毫秒值。
 
 #### FreeRTOS 实现
 
@@ -544,11 +490,6 @@ int mbedtls_hardware_poll(void *data, unsigned char *output,
 #define OPENAI_USE_TLS 1           /* 1=HTTPS（推荐）, 0=HTTP（不安全） */
 #endif
 
-/* ======================== JSON 序列化深度限制 ======================== */
-#ifndef OPENAI_JSON_MAX_DEPTH
-#define OPENAI_JSON_MAX_DEPTH 64   /* JSON 序列化最大嵌套深度，嵌入式可降低 */
-#endif
-
 /* ======================== API Base URL ======================== */
 /* 如需使用反向代理或私有端点，在此修改 */
 #if OPENAI_USE_TLS
@@ -599,7 +540,7 @@ int mbedtls_hardware_poll(void *data, unsigned char *output,
 python build.py --backend lwip
 
 # 编译全部后端
-python build.py
+python build.py --jobs 10
 
 # 自定义参数
 python build.py --backend lwip --timeout 60 --log-level 3 --no-tls
@@ -607,6 +548,10 @@ python build.py --backend lwip --timeout 60 --log-level 3 --no-tls
 # 清理构建目录
 python build.py --clean
 ```
+
+默认使用 `MinSizeRel`（`-Os`）并开启 10 个并行 worker；`--jobs` 小于 10 会直接
+报错。`all` 模式要求 lwIP 和 curl 两个 backend 都成功，任何 backend 缺少工具链、
+依赖或编译失败都会计入失败数并返回非零状态。
 
 输出文件在 `build_output/` 目录：
 
@@ -633,7 +578,7 @@ cmake --build build --parallel 10
 **可覆盖的编译选项：**
 
 ```bash
-cmake -S . -B build -DOPENAI_HTTP_BACKEND=OPENAI_BACKEND_LWIP -DOPENAI_LOG_ENABLED=0 -DOPENAI_LOG_LEVEL=0 -DOPENAI_USE_TLS=1 -DOPENAI_TIMEOUT=30 -DOPENAI_BUILD_EXAMPLES=ON
+cmake -S . -B build -DOPENAI_HTTP_BACKEND=OPENAI_BACKEND_LWIP -DOPENAI_LOG_ENABLED=0 -DOPENAI_LOG_LEVEL=0 -DOPENAI_USE_TLS=1 -DOPENAI_TIMEOUT=30
 ```
 
 `OPENAI_HTTP_BACKEND` 支持三个值：
@@ -743,18 +688,22 @@ target_link_libraries(openai PRIVATE lwip mbedtls)
 
 ### 方法四：使用项目自带的构建脚本（STM32 示例）
 
-项目提供了 `build_lwip.sh`，可作为参考：
+项目提供了 `build_lwip.sh`，用于交叉编译本项目的 lwIP backend archive：
 
 ```bash
 # 查看脚本了解编译细节
 cat build_lwip.sh
 ```
 
-该脚本展示了完整的 ARM GCC 交叉编译流程，包括：
+该脚本会：
 
-- 自动生成 `lwipopts.h`、`arch/cc.h`、`arch/sys_arch.h`、`sys_arch.c`
-- 分别编译 lwIP、mbedTLS、openai 为三个 `.a` 静态库
-- 最终链接命令
+- 从脚本自身位置解析项目根目录，并允许通过环境变量覆盖 toolchain
+- 使用至少 10 个并行任务构建 `libopenai_lwip.a`
+- 严格检查项目源文件、固定子模块头文件和 archive 成员
+- 仅在调用方提供真实平台 link object 与 response file 时执行最终 ELF 链接验证
+
+脚本不会生成假的 `sys_arch.c`，也不会把 archive 构建成功描述为 firmware 可用。
+lwIP、mbedTLS、RTOS port、网络驱动和 linker script 仍由目标工程提供。
 
 ---
 
@@ -763,18 +712,27 @@ cat build_lwip.sh
 **在调用任何 openai API 之前**，你的 lwIP 网络栈必须已经初始化完成：
 
 ```c
-#include "lwip/init.h"
+#include "lwip/tcpip.h"
 #include "lwip/netif.h"
-#include "lwip/timeouts.h"
+#include "lwip/sys.h"
 #include "netif/etharp.h"
 
 /* 全局网络接口 */
 struct netif gnetif;
 
+static void tcpip_init_done(void *arg)
+{
+    sys_sem_signal((sys_sem_t *)arg);
+}
+
 void network_init(void)
 {
-    /* 1. 初始化 lwIP */
-    lwip_init();
+    /* 1. 创建并初始化 lwIP tcpip_thread */
+    sys_sem_t init_sem;
+    if (sys_sem_new(&init_sem, 0) != ERR_OK) return;
+    tcpip_init(tcpip_init_done, &init_sem);
+    sys_arch_sem_wait(&init_sem, 0);
+    sys_sem_free(&init_sem);
 
     /* 2. 初始化网络接口（以太网示例） */
     ip4_addr_t ipaddr, netmask, gw;
@@ -783,7 +741,7 @@ void network_init(void)
     IP4_ADDR(&gw,      192, 168, 1, 1);
 
     netif_add(&gnetif, &ipaddr, &netmask, &gw, NULL,
-              ethernetif_init, netif_input);
+              ethernetif_init, tcpip_input);
     netif_set_default(&gnetif);
     netif_set_up(&gnetif);
 
@@ -792,21 +750,16 @@ void network_init(void)
 
     /* 4. 等待网络就绪 */
     while (!netif_is_up(&gnetif)) {
-        sys_check_timeouts();  /* 驱动 lwIP 定时器 */
-        /* 在 RTOS 中可加 vTaskDelay(1) */
+        sys_msleep(1);
     }
 }
 
-/* 在主循环或 RTOS 任务中调用 */
-void network_poll(void)
-{
-    sys_check_timeouts();
-}
 ```
 
 > **关键点**：
 >
-> - `sys_check_timeouts()` 必须定期调用（裸机中放主循环，RTOS 中放独立任务）
+> - `tcpip_init()` 必须成功创建 `tcpip_thread`，并应等待完成回调后再配置 netif
+> - 网卡接收路径应把数据交给 `tcpip_input`，不要从应用线程直接驱动 lwIP core
 > - 网络接口必须 `netif_set_up()` 后才能发送数据
 > - DNS 解析需要 UDP 支持（`LWIP_UDP=1`）
 
@@ -963,9 +916,9 @@ void streaming_example(void)
     while (openai_stream_read(stream, &event) == OPENAI_OK) {
         if (event.content) {
             printf("%s", event.content);   /* 打印每个 token */
-            openai_stream_event_free(&event);
             chunk_count++;
         }
+        openai_stream_event_free(&event);
     }
 
     printf("\n\nReceived %d chunks\n", chunk_count);
@@ -1036,13 +989,16 @@ void extended_thinking_example(void)
 
 ## 12. 不同平台移植参考
 
-### STM32F4（Cortex-M4，裸机）
+### STM32F4（Cortex-M4 + RTOS）
 
 - 已有 `build_lwip.sh` 参考脚本
 - MCU 标志：`-mcpu=cortex-m4 -mthumb -mfloat-abi=hard -mfpu=fpv4-sp-d16`
 - `sys_now()` 使用 `HAL_GetTick()`
 - 硬件校验和：`CHECKSUM_*` 全部设为 `0`
 - 推荐 RAM：128KB+（lwIP 16KB + mbedTLS 50KB+ + openai 20KB+）
+
+当前 Socket backend 不支持 STM32F4 `NO_SYS=1` 裸机配置。请使用 FreeRTOS/CMSIS-RTOS
+等真实系统层并调用 `tcpip_init()`；纯裸机项目需要实现独立的 lwIP raw API backend。
 
 ### STM32H7（Cortex-M7，FreeRTOS）
 
@@ -1189,14 +1145,14 @@ ESP-IDF 自带 lwIP 和 mbedTLS，**无需使用项目子模块**：
 
 方法二：直接集成源码
 □ 1. git submodule update --init --recursive
-□ 2. 提供 lwipopts.h（参考第 5 节）
+□ 2. 使用 RTOS 和 NO_SYS=0，提供 lwipopts.h（参考第 5 节）
 □ 3. 提供 arch/cc.h（参考第 6.1 节）
 □ 4. 提供 arch/sys_arch.h（参考第 6.2 节）
 □ 5. 提供 sys_arch.c（参考第 6.3 节）
 □ 6. 配置 mbedTLS（参考第 7 节，HTTPS 必需）
 □ 7. 将 3 个 .c 源文件加入工程编译
 □ 8. 添加头文件路径和编译定义
-□ 9. 确保网络已初始化（参考第 10 节）
+□ 9. 调用 tcpip_init() 并确保网络已初始化（参考第 10 节）
 □ 10. 链接 openai + lwip + mbedtls 静态库
 □ 11. 编译测试
 ```

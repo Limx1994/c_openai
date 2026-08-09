@@ -30,6 +30,15 @@ typedef struct {
     size_t body_size;    /**< Body size in bytes */
 } OpenAI_HTTPResponse;
 
+/**
+ * @brief Transport error reported by the active HTTP backend
+ */
+typedef enum {
+    OPENAI_HTTP_ERROR_NONE = 0,
+    OPENAI_HTTP_ERROR_NETWORK,
+    OPENAI_HTTP_ERROR_TIMEOUT
+} OpenAI_HTTPError;
+
 typedef struct OpenAI_HTTPStream OpenAI_HTTPStream;
 
 /**
@@ -42,6 +51,12 @@ int openai_http_init(void);
  * @brief Cleanup HTTP subsystem (not thread-safe, call after all clients freed)
  */
 void openai_http_cleanup(void);
+
+/**
+ * @brief Get the transport error from the most recent HTTP operation
+ * @return Backend transport error category
+ */
+OpenAI_HTTPError openai_http_get_last_error(void);
 
 /**
  * @brief Send HTTP request
