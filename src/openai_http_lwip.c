@@ -282,8 +282,14 @@ static int openai_http_parse_url(const char* url, char* host, size_t host_size,
     /* Extract port if present */
     if (*end == ':') {
         end++;
-        *port = atoi(end);
-        while (isdigit(*end)) end++;
+        char* port_end = NULL;
+        long port_val = strtol(end, &port_end, 10);
+        if (port_end == end || port_val <= 0 || port_val > 65535) {
+            OPENAI_LOG_ERROR("openai_http_parse_url: invalid port in %s", url);
+            return -1;
+        }
+        *port = (int)port_val;
+        end = port_end;
     }
 
     /* Extract path */
@@ -439,6 +445,31 @@ static int send_all_tcp(int sock, const char* data, size_t len) {
     return 0;
 }
 
+/* Escape '%' as "%%" for safe snprintf format usage. */
+static void escape_for_snprintf(const char* src, char* dst, size_t dst_size) {
+    size_t j = 0;
+    for (size_t i = 0; src[i] && j + 1 < dst_size; i++) {
+        if (src[i] == '%') {
+            if (j + 2 >= dst_size) break;
+            dst[j++] = '%';
+            dst[j++] = '%';
+        } else {
+            dst[j++] = src[i];
+        }
+    }
+    dst[j] = '\0';
+}
+
+/* Check if string contains bare CRLF (not at end). */
+static int has_crlf(const char* s) {
+    if (!s) return 0;
+    while (*s) {
+        if (*s == '\r' && *(s + 1) == '\n') return 1;
+        s++;
+    }
+    return 0;
+}
+
 /* Build HTTP request header string. Caller must free(). */
 static char* build_http_header(OpenAI_HTTPRequest* req, const char* host,
                                 const char* path, const char* accept_type) {
@@ -463,6 +494,18 @@ static char* build_http_header(OpenAI_HTTPRequest* req, const char* host,
     char* header = (char*)malloc(header_size);
     if (!header) return NULL;
 
+    /* Escape user-controlled strings for safe snprintf format usage */
+    char escaped_path[256];
+    char escaped_host[256];
+    escape_for_snprintf(path, escaped_path, sizeof(escaped_path));
+    escape_for_snprintf(host, escaped_host, sizeof(escaped_host));
+
+    /* Reject extra_headers containing bare CRLF to prevent header injection */
+    if (req->extra_headers && has_crlf(req->extra_headers)) {
+        free(header);
+        return NULL;
+    }
+
     int ret;
     size_t needed;
 
@@ -482,7 +525,7 @@ static char* build_http_header(OpenAI_HTTPRequest* req, const char* host,
             "%s"
             "Content-Length: %zu\r\n"
             "\r\n",
-            path, host, auth_line, accept_type,
+            escaped_path, escaped_host, auth_line, accept_type,
             req->extra_headers ? req->extra_headers : "",
             req->body ? req->body_size : 0);
     } else {
@@ -494,7 +537,7 @@ static char* build_http_header(OpenAI_HTTPRequest* req, const char* host,
             "%s"
             "Content-Length: %zu\r\n"
             "\r\n",
-            path, host, accept_type,
+            escaped_path, escaped_host, accept_type,
             req->extra_headers ? req->extra_headers : "",
             req->body ? req->body_size : 0);
     }
@@ -529,7 +572,7 @@ static char* build_http_header(OpenAI_HTTPRequest* req, const char* host,
                 "%s"
                 "Content-Length: %zu\r\n"
                 "\r\n",
-                path, host, auth_line, accept_type,
+                escaped_path, escaped_host, auth_line, accept_type,
                 req->extra_headers ? req->extra_headers : "",
                 req->body ? req->body_size : 0);
         } else {
@@ -541,7 +584,7 @@ static char* build_http_header(OpenAI_HTTPRequest* req, const char* host,
                 "%s"
                 "Content-Length: %zu\r\n"
                 "\r\n",
-                path, host, accept_type,
+                escaped_path, escaped_host, accept_type,
                 req->extra_headers ? req->extra_headers : "",
                 req->body ? req->body_size : 0);
         }
@@ -1021,10 +1064,6 @@ OpenAI_HTTPResponse* openai_http_request(OpenAI_HTTPRequest* req) {
     return do_http_request(req, 0);
 }
 
-OpenAI_HTTPResponse* openai_http_request_stream(OpenAI_HTTPRequest* req) {
-    return do_http_request(req, 1);
-}
-
 #define OPENAI_STREAM_HEADER_SIZE 8192
 #define OPENAI_STREAM_RAW_SIZE 4096
 
@@ -1267,6 +1306,7 @@ int openai_http_stream_read(OpenAI_HTTPStream* stream, void* buffer, size_t size
         if (stream->content_remaining >= 0 && count > (size_t)stream->content_remaining) {
             count = (size_t)stream->content_remaining;
         }
+        if (count > (size_t)INT_MAX) count = (size_t)INT_MAX;
         memcpy(output, stream->raw + stream->raw_pos, count);
         stream->raw_pos += count;
         if (stream->content_remaining >= 0) stream->content_remaining -= (long)count;
@@ -1312,7 +1352,7 @@ void openai_http_stream_close(OpenAI_HTTPStream* stream) {
     if (!stream) return;
 #if OPENAI_USE_TLS
     if (stream->is_tls) {
-        if (stream->pcb && s_altcp_connect_state != -1) {
+        if (stream->pcb) {
             altcp_err(stream->pcb, NULL);
             altcp_recv(stream->pcb, NULL);
             altcp_close(stream->pcb);

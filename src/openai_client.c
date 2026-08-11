@@ -150,6 +150,9 @@ static int get_transport_error(void) {
 
 static int validate_anthropic_request(OpenAI_ChatRequest* req) {
     if (!req) return OPENAI_ERR_INVALID_PARAM;
+    if (!req->model || !req->model[0]) return OPENAI_ERR_INVALID_PARAM;
+    if (!req->messages || req->message_count == 0) return OPENAI_ERR_INVALID_PARAM;
+    if (req->max_tokens <= 0) return OPENAI_ERR_INVALID_PARAM;
     if (req->thinking_enabled) {
         int max_tokens = req->max_tokens > 0 ? req->max_tokens : 4096;
         int budget = req->thinking_budget > 0 ? req->thinking_budget : max_tokens / 2;
@@ -230,7 +233,7 @@ static char* build_chat_request_body(OpenAI_ChatRequest* req) {
             }
             buf = new_buf;
         }
-        strcpy(buf + offset, temp_buf);
+        memcpy(buf + offset, temp_buf, temp_len);
         offset += temp_len;
     }
 
@@ -325,6 +328,7 @@ static char* build_anthropic_request_body(OpenAI_ChatRequest* req) {
     /* First pass: collect system messages */
     char* system_content = NULL;
     size_t system_len = 0;
+    size_t system_capacity = 0;
 
     for (size_t i = 0; i < req->message_count && req->messages; i++) {
         OpenAI_Message* msg = &req->messages[i];
@@ -338,34 +342,32 @@ static char* build_anthropic_request_body(OpenAI_ChatRequest* req) {
             }
             size_t part_len = strlen(escaped);
             if (system_content) {
-                /* SIZE_MAX overflow protection */
-                if (part_len > SIZE_MAX - 3 ||
-                    system_len > SIZE_MAX - part_len - 3) {
-                    OPENAI_LOG_ERROR("system_content size overflow: sys=%zu part=%zu", system_len, part_len);
-                    free(escaped);
-                    free(system_content);
-                    free(buf);
-                    return NULL;
-                } else {
-                    char* new_sys = (char*)realloc(system_content, system_len + part_len + 3);
+                size_t needed = system_len + part_len + 3;
+                if (system_capacity < needed) {
+                    size_t new_cap = system_capacity == 0 ? 64 : system_capacity;
+                    while (new_cap < needed) {
+                        if (new_cap > SIZE_MAX / 2) { new_cap = SIZE_MAX; break; }
+                        new_cap *= 2;
+                    }
+                    char* new_sys = (char*)realloc(system_content, new_cap);
                     if (!new_sys) {
-                        OPENAI_LOG_ERROR("realloc system_content failed, need %zu bytes", system_len + part_len + 3);
+                        OPENAI_LOG_ERROR("realloc system_content failed, need %zu bytes", new_cap);
                         free(escaped);
                         free(system_content);
                         free(buf);
                         return NULL;
-                    } else {
-                        system_content = new_sys;
-                        if (system_len > 0) {
-                            system_content[system_len++] = '\\';
-                            system_content[system_len++] = 'n';
-                            system_content[system_len] = '\0';
-                        }
-                        memcpy(system_content + system_len, escaped, part_len);
-                        system_len += part_len;
-                        system_content[system_len] = '\0';
                     }
+                    system_content = new_sys;
+                    system_capacity = new_cap;
                 }
+                if (system_len > 0) {
+                    system_content[system_len++] = '\\';
+                    system_content[system_len++] = 'n';
+                    system_content[system_len] = '\0';
+                }
+                memcpy(system_content + system_len, escaped, part_len);
+                system_len += part_len;
+                system_content[system_len] = '\0';
             } else {
                 system_content = (char*)malloc(part_len + 1);
                 if (!system_content) {
@@ -486,7 +488,7 @@ static char* build_anthropic_request_body(OpenAI_ChatRequest* req) {
             if (!new_buf) { free(buf); return NULL; }
             buf = new_buf;
         }
-        strcpy(buf + offset, temp_buf);
+        memcpy(buf + offset, temp_buf, temp_len);
         offset += temp_len;
     }
 
@@ -542,6 +544,7 @@ static char* build_anthropic_request_body(OpenAI_ChatRequest* req) {
         char think_buf[128];
         int tlen = snprintf(think_buf, sizeof(think_buf),
             ",\"thinking\":{\"type\":\"enabled\",\"budget_tokens\":%d}", budget);
+        if (tlen < 0) { free(buf); return NULL; }
         while (offset + tlen >= (int)buf_size - 1) {
             buf_size *= 2;
             char* new_buf = (char*)realloc(buf, buf_size);
@@ -759,10 +762,7 @@ static OpenAI_ChatResponse* parse_anthropic_response(OpenAI_JSONNode* json) {
     return resp;
 
 content_cleanup:
-    if (resp && resp->choices) {
-        free(resp->choices[0].content);
-        resp->choices[0].content = NULL;
-    }
+    /* content is freed by openai_chat_response_free below */
     /* fall through to parse_cleanup */
 
 parse_cleanup:
@@ -1047,13 +1047,7 @@ static int parse_sse_line(const char* data, size_t data_len, SSEParseResult* res
     }
 
     /* Parse JSON payload */
-    char* json_str = (char*)malloc(data_len + 1);
-    if (!json_str) return OPENAI_ERR_MEMORY;
-    memcpy(json_str, data, data_len);
-    json_str[data_len] = '\0';
-
-    OpenAI_JSONNode* root = openai_json_parse(json_str);
-    free(json_str);
+    OpenAI_JSONNode* root = openai_json_parse(data);
     if (!root) return OPENAI_ERR_PARSE;
 
     /* Get choices[0] */
@@ -1072,7 +1066,7 @@ static int parse_sse_line(const char* data, size_t data_len, SSEParseResult* res
     } else {
         /* index might be a sibling field; try to find it */
         int found = 0;
-        for (OpenAI_JSONNode* c = choice; c; c = openai_json_array_next(c)) {
+        for (OpenAI_JSONNode* c = choice->children; c; c = c->next) {
             if (c->key && strcmp(c->key, "index") == 0 && c->is_number) {
                 result->choice_index = (int)c->number_value;
                 found = 1;
@@ -1196,7 +1190,7 @@ static int parse_anthropic_delta_from_dom(OpenAI_JSONNode* root, OpenAI_StreamEv
         event->event_type = OPENAI_EVENT_THINKING_SIG;
         return DELTA_READY;
     }
-    return DELTA_UNKNOWN;
+    return DELTA_PARSE_ERROR;
 }
 
 static size_t find_line_start(const char* buffer, size_t size, size_t start) {
@@ -1731,6 +1725,7 @@ int openai_stream_read(void* stream, OpenAI_StreamEvent* event) {
                                 handle->parse_pos++;
                             }
                             openai_json_free(delta_root);
+                            free(line_buffer);
                             continue;
                         } else if (ret == DELTA_PARSE_ERROR) {
                             openai_json_free(delta_root);
@@ -1743,7 +1738,11 @@ int openai_stream_read(void* stream, OpenAI_StreamEvent* event) {
                             openai_stream_event_free(event);
                             return OPENAI_ERR_MEMORY;
                         }
-                        /* DELTA_UNKNOWN (-2) falls through to legacy parser below */
+                        /* Any other return (DELTA_PARSE_ERROR) is a fatal parse error */
+                        openai_json_free(delta_root);
+                        free(line_buffer);
+                        handle->eof = 1;
+                        return OPENAI_ERR_PARSE;
                     }
                     /* Parse content_block_stop */
                     if (strcmp(handle->current_event, "content_block_stop") == 0) {
@@ -1794,12 +1793,19 @@ int openai_stream_read(void* stream, OpenAI_StreamEvent* event) {
                             return 0;
                         }
 
-                        /* All block types: clear state */
+                        /* All block types: clear state and return event */
+                        handle->parse_pos = line_end + 1;
+                        if (handle->parse_pos < handle->buffer_size &&
+                            (handle->buffer[handle->parse_pos] == '\n' || handle->buffer[handle->parse_pos] == '\r')) {
+                            handle->parse_pos++;
+                        }
+                        openai_json_free(stop_root);
+                        free(line_buffer);
                         free(handle->current_tool_id);
                         handle->current_tool_id = NULL;
                         handle->current_block_type[0] = '\0';
                         handle->current_index = -1;
-                        openai_json_free(stop_root);
+                        return 0;
                     }
                 }
                 /* Skip empty lines and non-data lines for Anthropic */
@@ -1845,13 +1851,14 @@ int openai_stream_read(void* stream, OpenAI_StreamEvent* event) {
                     result.finish_reason = NULL;
                     event->index = result.choice_index;
                     OPENAI_LOG_DEBUG("OpenAI stream: payload_type=NONE, finish_reason=%s", event->stop_reason);
-                handle->parse_pos = line_end + 1;
-                if (handle->parse_pos < handle->buffer_size &&
-                    (handle->buffer[handle->parse_pos] == '\n' || handle->buffer[handle->parse_pos] == '\r')) {
-                    handle->parse_pos++;
-                }
-                free(line_buffer);
-                return 0;
+                    handle->parse_pos = line_end + 1;
+                    if (handle->parse_pos < handle->buffer_size &&
+                        (handle->buffer[handle->parse_pos] == '\n' || handle->buffer[handle->parse_pos] == '\r')) {
+                        handle->parse_pos++;
+                    }
+                    free(line_buffer);
+                    sse_parse_result_clear(&result);
+                    return 0;
             } else {
                 /* TEXT or TOOL_CALLS payload */
                 event->event_type = (result.payload_type == SSE_PAYLOAD_TOOL_CALLS)

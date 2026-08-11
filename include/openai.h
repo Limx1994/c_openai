@@ -23,6 +23,9 @@
  * @brief Create a new OpenAI client
  * @param api_key Your OpenAI API key (e.g., "sk-...")
  * @return Client handle, or NULL on failure
+ *
+ * NOTE: Only one client instance may exist at a time. Creating a second
+ * client before freeing the previous one will return NULL.
  */
 OpenAI_Client* openai_client_new(const char* api_key);
 

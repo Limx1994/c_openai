@@ -58,12 +58,6 @@ def find_arm_toolchain():
     return None
 
 
-def find_system_gcc():
-    """查找系统 GCC"""
-    gcc = shutil.which("gcc") or shutil.which("cc")
-    return Path(gcc).parent if gcc else None
-
-
 def find_lwip_include():
     """查找 lwIP 头文件目录"""
     candidates = [
