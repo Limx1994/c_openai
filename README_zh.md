@@ -44,6 +44,7 @@ c_openai/
 ├── CMakeLists.txt        # CMake 构建配置
 ├── README.md             # 英文文档
 ├── README_zh.md          # 中文文档
+├── CHANGELOG.md          # 发布历史
 └── CLAUDE.md             # 项目规范
 ```
 
@@ -376,7 +377,6 @@ openai_client_set_base_url(client, "https://your-proxy.com/v1");
 - `OPENAI_ERR_AUTH` - 认证失败（HTTP 401）
 - `OPENAI_ERR_RATE_LIMIT` - 超出速率限制（HTTP 429）
 - `OPENAI_ERR_SERVER` - 服务器错误（HTTP 5xx）
-- `OPENAI_ERR_BUFFER_EMPTY` - 缓冲区为空（流式响应）
 - `OPENAI_ERR_EOF` - 流结束（流式响应）
 - `OPENAI_ERR_UNKNOWN` - 未知错误
 
@@ -422,6 +422,10 @@ if (!resp) {
 5. **增量 SSE 解析**：两个后端都会增量交付 SSE 数据。传输缓冲区有固定上限，未完成的单条 SSE 行限制为 64 KiB，空闲流会在 `OPENAI_TIMEOUT` 后以网络错误结束。
 
 6. **lwIP 溢出保护**：`build_http_header()` 使用两遍 `snprintf` 并检测截断，SIZE_MAX 溢出检查保护缓冲区大小计算。`recv_response()` 在缓冲区倍增前检查 `SIZE_MAX/2` 防止整数溢出。`build_anthropic_request_body()` 在累积 system_content 前检查 SIZE_MAX。
+
+7. **HTTP 头注入防护**：lwIP 后端使用 `escape_for_snprintf()` 和 `has_crlf()` 验证 `extra_headers`，拒绝包含裸 CRLF 的请求头以防止 HTTP 头注入攻击。libcurl 后端使用 `append_extra_headers()` 进行相同的 CRLF 验证。
+
+8. **流读取大小防护**：`openai_http_stream_read()` 将返回的字节数限制在 `INT_MAX` 以内，防止 SSE 解析器中出现 `size_t` 到 `int` 截断问题。
 
 ## 平台说明
 

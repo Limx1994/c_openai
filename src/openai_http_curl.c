@@ -7,28 +7,23 @@
 #include "openai_config.h"
 
 /* Append extra_headers (raw \r\n-delimited) to a curl_slist.
-   Returns the (possibly NULL) list on success, or NULL on allocation failure. */
+   Returns the (possibly NULL) list on success, or NULL on allocation failure
+   or if extra_headers contains bare CRLF (header injection protection). */
 static struct curl_slist* append_extra_headers(struct curl_slist* list, const char* extra_headers)
 {
     if (!extra_headers) return list;
+
+    /* Reject bare CRLF to prevent HTTP header injection */
     const char* p = extra_headers;
     while (*p) {
-        const char* line_end = strstr(p, "\r\n");
-        size_t line_len = line_end ? (size_t)(line_end - p) : strlen(p);
-        if (line_len > 0) {
-            char* hdr = (char*)malloc(line_len + 1);
-            if (!hdr) {
-                if (list) curl_slist_free_all(list);
-                return NULL;
-            }
-            memcpy(hdr, p, line_len);
-            hdr[line_len] = '\0';
-            list = curl_slist_append(list, hdr);
-            free(hdr);
+        if (*p == '\r' || *p == '\n') {
+            if (list) curl_slist_free_all(list);
+            return NULL;
         }
-        if (!line_end) break;
-        p = line_end + 2;
+        p++;
     }
+
+    list = curl_slist_append(list, extra_headers);
     return list;
 }
 
@@ -226,10 +221,6 @@ OpenAI_HTTPResponse* openai_http_request(OpenAI_HTTPRequest* req) {
     return do_curl_request(req, 0);
 }
 
-OpenAI_HTTPResponse* openai_http_request_stream(OpenAI_HTTPRequest* req) {
-    return do_curl_request(req, 1);
-}
-
 void openai_http_response_free(OpenAI_HTTPResponse* resp) {
     if (resp) {
         if (resp->body) free(resp->body);
@@ -419,6 +410,7 @@ int openai_http_stream_read(OpenAI_HTTPStream* stream, void* buffer, size_t size
     }
     size_t available = stream->size - stream->pos;
     size_t count = size < available ? size : available;
+    if (count > (size_t)INT_MAX) count = (size_t)INT_MAX;
     memcpy(buffer, stream->buffer + stream->pos, count);
     stream->pos += count;
     return (int)count;

@@ -21,7 +21,6 @@ typedef enum {
     OPENAI_ERR_RATE_LIMIT = -8,       /**< Rate limit exceeded */
     OPENAI_ERR_SERVER = -9,          /**< Server error */
     OPENAI_ERR_UNKNOWN = -99,         /**< Unknown error */
-    OPENAI_ERR_BUFFER_EMPTY = -100,  /**< Buffer empty (streaming) [deprecated: use OPENAI_ERR_TIMEOUT] */
     OPENAI_ERR_EOF = -101             /**< End of stream (streaming) */
 } OpenAI_ErrorCode;
 

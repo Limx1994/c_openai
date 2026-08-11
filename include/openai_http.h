@@ -66,13 +66,6 @@ OpenAI_HTTPError openai_http_get_last_error(void);
 OpenAI_HTTPResponse* openai_http_request(OpenAI_HTTPRequest* req);
 
 /**
- * @brief Send HTTP request for streaming (collects full response)
- * @param req HTTP request parameters
- * @return Response handle with body, or NULL on failure
- */
-OpenAI_HTTPResponse* openai_http_request_stream(OpenAI_HTTPRequest* req);
-
-/**
  * @brief Open an incremental HTTP response stream
  * @param req HTTP request parameters
  * @param status_code Receives the HTTP status code after response headers arrive

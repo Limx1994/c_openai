@@ -30,11 +30,11 @@
 
 /* Logging */
 #ifndef OPENAI_LOG_ENABLED
-#define OPENAI_LOG_ENABLED 1   /**< 0=disable all logging, 1=enable */
+#define OPENAI_LOG_ENABLED 0   /**< 0=disable all logging, 1=enable */
 #endif
 
 #ifndef OPENAI_LOG_LEVEL
-#define OPENAI_LOG_LEVEL 3     /**< 0=error, 1=warn, 2=info, 3=debug */
+#define OPENAI_LOG_LEVEL 0     /**< 0=error, 1=warn, 2=info, 3=debug */
 #endif
 
 #if OPENAI_LOG_ENABLED

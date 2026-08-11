@@ -68,10 +68,8 @@ static void reset_mock(void) {
     free(captured_request_body);
     captured_request_body = NULL;
     mock_response_body = "{}";
-    mock_stream_body = "";
     mock_status_code = 200;
     mock_request_failure = 0;
-    mock_stream_open_failure = 0;
     mock_stream_read_failure = 0;
     mock_transport_error = OPENAI_HTTP_ERROR_NONE;
 }
@@ -103,10 +101,6 @@ OpenAI_HTTPResponse* openai_http_request(OpenAI_HTTPRequest* req) {
     }
     response->body_size = strlen(response->body);
     return response;
-}
-
-OpenAI_HTTPResponse* openai_http_request_stream(OpenAI_HTTPRequest* req) {
-    return openai_http_request(req);
 }
 
 OpenAI_HTTPStream* openai_http_stream_open(OpenAI_HTTPRequest* req, int* status_code) {

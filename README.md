@@ -45,6 +45,7 @@ c_openai/
 ├── CMakeLists.txt        # CMake build configuration
 ├── README.md             # English documentation
 ├── README_zh.md          # Chinese documentation
+├── CHANGELOG.md          # Release history
 └── CLAUDE.md             # Project specification
 ```
 
@@ -385,7 +386,6 @@ Error codes:
 - `OPENAI_ERR_AUTH` - Authentication failed (HTTP 401)
 - `OPENAI_ERR_RATE_LIMIT` - Rate limit exceeded (HTTP 429)
 - `OPENAI_ERR_SERVER` - Server error (HTTP 5xx)
-- `OPENAI_ERR_BUFFER_EMPTY` - Buffer empty (streaming)
 - `OPENAI_ERR_EOF` - End of stream (streaming)
 - `OPENAI_ERR_UNKNOWN` - Unknown error
 
@@ -431,6 +431,10 @@ This library includes several security enhancements:
 5. **Incremental SSE Parsing**: Both backends deliver SSE data incrementally. Transport buffers are bounded, incomplete SSE lines are capped at 64 KiB, and idle streams terminate with a network error after `OPENAI_TIMEOUT`.
 
 6. **lwIP Overflow Protection**: `build_http_header()` uses two-pass `snprintf` with truncation detection and SIZE_MAX overflow checks. `recv_response()` guards buffer doubling against SIZE_MAX/2 overflow. `build_anthropic_request_body()` checks SIZE_MAX before accumulating system content.
+
+7. **HTTP Header Injection Prevention**: The lwIP backend uses `escape_for_snprintf()` and `has_crlf()` to validate `extra_headers`, rejecting any headers containing bare CRLF to prevent HTTP header injection. The libcurl backend uses `append_extra_headers()` with the same CRLF validation.
+
+8. **Stream Read Size Protection**: `openai_http_stream_read()` clamps the returned byte count to `INT_MAX` to prevent `size_t`-to-`int` truncation issues in the SSE parser.
 
 ## Platform-Specific Notes
 
