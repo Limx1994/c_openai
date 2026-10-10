@@ -183,6 +183,66 @@ static int test_json_round_trip(void) {
     return 0;
 }
 
+static int test_openai_request_parameters(void) {
+    reset_mock();
+    mock_response_body =
+        "{\"id\":\"c1\",\"object\":\"chat.completion\",\"choices\":["
+        "{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"answer\"},"
+        "\"finish_reason\":\"stop\"}]}";
+    OpenAI_Client* client = openai_client_new("test-key");
+    CHECK(client != NULL);
+    OpenAI_Message messages[] = { { "user", "hello" }, { "assistant", "prior" } };
+    OpenAI_ChatRequest request = {0};
+    request.messages = messages;
+    request.message_count = 1;
+
+    OpenAI_ChatResponse* response = openai_chat_create(client, &request);
+    CHECK(response != NULL);
+    OpenAI_JSONNode* root = openai_json_parse(captured_request_body);
+    CHECK(root && root->is_object);
+    OpenAI_JSONNode* message_array = openai_json_get_object(root, "messages");
+    CHECK(message_array && message_array->is_array && message_array->child_count == 1);
+    CHECK(openai_json_get_object(root, "temperature") != NULL);
+    CHECK(openai_json_get_number(root, "temperature") == 0);
+    CHECK(openai_json_get_object(root, "stream") == NULL);
+    openai_json_free(root);
+    openai_chat_response_free(response);
+
+    request.message_count = 2;
+    request.temperature = 0.7f;
+    request.max_tokens = 32;
+    request.top_p = 0.8f;
+    request.stop = "\"done\"\n";
+    response = openai_chat_create(client, &request);
+    CHECK(response != NULL);
+    root = openai_json_parse(captured_request_body);
+    CHECK(root != NULL);
+    message_array = openai_json_get_object(root, "messages");
+    CHECK(message_array && message_array->is_array && message_array->child_count == 2);
+    CHECK(fabs(openai_json_get_number(root, "temperature") - 0.7) < 0.00001);
+    CHECK(openai_json_get_number(root, "max_tokens") == 32);
+    CHECK(fabs(openai_json_get_number(root, "top_p") - 0.8) < 0.00001);
+    CHECK(strcmp(openai_json_get_string(root, "stop"), request.stop) == 0);
+    openai_json_free(root);
+    openai_chat_response_free(response);
+
+    void* stream = openai_chat_create_stream(client, &request);
+    CHECK(stream != NULL);
+    CHECK(request.stream == 0);
+    root = openai_json_parse(captured_request_body);
+    CHECK(root != NULL);
+    message_array = openai_json_get_object(root, "messages");
+    CHECK(message_array && message_array->is_array && message_array->child_count == 2);
+    CHECK(openai_json_get_number(root, "max_tokens") == 32);
+    OpenAI_JSONNode* stream_node = openai_json_get_object(root, "stream");
+    CHECK(stream_node && stream_node->is_boolean && stream_node->boolean_value);
+    openai_json_free(root);
+    openai_stream_close(stream);
+    openai_client_free(client);
+    reset_mock();
+    return 0;
+}
+
 static OpenAI_Client* new_anthropic_client(void) {
     OpenAI_Client* client = openai_client_new("test-key");
     if (!client) return NULL;
@@ -448,6 +508,7 @@ static int test_timeout_mapping(void) {
 int main(void) {
     int failures = 0;
     failures += test_json_round_trip();
+    failures += test_openai_request_parameters();
     failures += test_anthropic_request_and_response();
     failures += test_anthropic_text_and_thinking_stream();
     failures += test_anthropic_tool_stream();

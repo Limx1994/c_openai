@@ -555,7 +555,7 @@ char* openai_json_escape_string_with_length(const char* str, size_t str_len, siz
             case '\f': *out++ = '\\'; *out++ = 'f';  break;
             default:
                 if (ch < 0x20 || ch == 0x7F) {
-                    out += snprintf(out, 4, "\\u%04x", ch);
+                    out += snprintf(out, 7, "\\u%04x", ch);
                 } else {
                     *out++ = (char)ch;
                 }

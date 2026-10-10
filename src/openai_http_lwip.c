@@ -198,8 +198,10 @@ static int altcp_read(struct altcp_pcb *pcb, void *buf, size_t len) {
             openai_http_set_error(OPENAI_HTTP_ERROR_NETWORK);
             return -1;
         }
+        h = s_rx_ring.head;
     }
 
+    h = s_rx_ring.head;
     if (s_rx_ring.data_ready == 2 && t == h) {
         return 0; /* EOF */
     }
@@ -216,7 +218,7 @@ static int altcp_read(struct altcp_pcb *pcb, void *buf, size_t len) {
     }
     t = (t + (uint32_t)to_read) % ALTCP_RX_BUF_SIZE;
     s_rx_ring.tail = t;
-    if (t == h) s_rx_ring.data_ready = 0;
+    if (t == h && s_rx_ring.data_ready != 2) s_rx_ring.data_ready = 0;
 
     return (int)to_read;
 }
@@ -464,7 +466,7 @@ static void escape_for_snprintf(const char* src, char* dst, size_t dst_size) {
 static int has_crlf(const char* s) {
     if (!s) return 0;
     while (*s) {
-        if (*s == '\r' && *(s + 1) == '\n') return 1;
+        if (*s == '\r' && *(s + 1) == '\n') return *(s + 2) != '\0';
         s++;
     }
     return 0;
