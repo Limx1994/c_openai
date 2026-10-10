@@ -1,6 +1,8 @@
-﻿# C-OpenAI 嵌入式移植指南
+# C-OpenAI 嵌入式移植指南
 
-本文档面向需要将 C-OpenAI 库移植到嵌入式平台（STM32、ESP32、RP2040 等 MCU）的开发者。
+本文档面向需要将 C-OpenAI v0.0.3 移植到嵌入式平台（STM32、ESP32、RP2040 等 MCU）的开发者。
+
+验证边界：Windows/MinGW 下的静态库构建、模拟传输测试和第 7.1 节公开头文件配置编译已验证；ARM 工具链、目标板运行及真实 lwIP TLS 网络未验证。平台示例需要结合目标 SDK 调整。
 
 ---
 
@@ -68,11 +70,11 @@ C-OpenAI 是一个 C 语言实现的 OpenAI/Anthropic API 客户端库，支持�
 
 ### 必需依赖
 
-| 组件      | 来源                          | 用途                                                                                          | 大小估算        |
+| 组件 | 来源 | 用途 | 大小估算 |
 | ------- | --------------------------- | ------------------------------------------------------------------------------------------- | ----------- |
-| lwIP    | `third_party/lwip` (子模块)    | TCP/IP 协议栈、Socket API、DNS                                                                   | ~100-200 KB |
-| mbedTLS | `third_party/mbedtls` (子模块) | TLS/SSL 加密（HTTPS）                                                                           | ~200-400 KB |
-| 标准库     | 你的工具链提供                     | `malloc`, `calloc`, `realloc`, `free`, `snprintf`, `strtod`, `memset`, `memcpy`, `strcmp` 等 | —           |
+| lwIP | `third_party/lwip` (子模块) | TCP/IP 协议栈、Socket API、DNS | ~100-200 KB |
+| mbedTLS | `third_party/mbedtls` (子模块) | TLS/SSL 加密（HTTPS） | ~200-400 KB |
+| 标准库 | 你的工具链提供 | `malloc`, `calloc`, `realloc`, `free`, `snprintf`, `strtod`, `memset`, `memcpy`, `strcmp` 等 | — |
 
 ### 不需要的依赖
 
@@ -120,7 +122,7 @@ double strtod(const char *str, char **endptr);
 2. **网络硬件** — 以太网、WiFi 或蜂窝模块已可工作（ lwIP 需要底层网络驱动）
 3. **lwIP 已集成** — 如果你的项目已使用 lwIP，可复用现有配置；否则需按本指南配置
 4. **mbedTLS 已集成**（可选）— 如需 HTTPS 支持；如仅用 HTTP 可跳过
-5. **堆内存** — 至少需要 60-100 KB 可用堆（详见[内存需求估算](#14-内存需求估算)）
+5. **堆内存** — 按 60-100 KB 可用堆作初步规划，实际需求须测量（详见[内存需求估算](#14-内存需求估算)）
 
 ---
 
@@ -216,15 +218,15 @@ third_party/mbedtls/library/     ← mbedTLS 库代码
 
 ### 各配置项说明
 
-| 配置项                | 推荐值         | 说明                                            |
+| 配置项 | 推荐值 | 说明 |
 | ------------------ | ----------- | --------------------------------------------- |
-| `NO_SYS`           | `0`         | **必须**。当前 backend 使用 lwIP Socket API，需要真实 RTOS 系统层 |
-| `LWIP_SOCKET`      | `1`         | **必须**。本库使用 POSIX Socket API                  |
-| `MEM_SIZE`         | 16384~32768 | lwIP 总堆内存（字节），取决于并发连接数和缓冲区需求                  |
-| `MEMP_NUM_TCP_PCB` | `4`         | 最大并发 TCP 连接控制块。API 调用为单请求，`1` 即可              |
-| `TCP_MSS`          | `1460`      | 以太网标准值。WiFi 可能需要 `536` 或更小                    |
-| `TCP_WND`          | `4*TCP_MSS` | 接收窗口大小，影响下载速度                                 |
-| `CHECKSUM_*`       | `0` 或 `1`   | `0`=使用硬件校验和（STM32 等），`1`=软件计算                 |
+| `NO_SYS` | `0` | **必须**。当前 backend 使用 lwIP Socket API，需要真实 RTOS 系统层 |
+| `LWIP_SOCKET` | `1` | **必须**。本库使用 POSIX Socket API |
+| `MEM_SIZE` | 16384~32768 | lwIP 总堆内存（字节），取决于并发连接数和缓冲区需求 |
+| `MEMP_NUM_TCP_PCB` | `4` | 最大并发 TCP 连接控制块。API 调用为单请求，`1` 即可 |
+| `TCP_MSS` | `1460` | 以太网标准值。WiFi 可能需要 `536` 或更小 |
+| `TCP_WND` | `4*TCP_MSS` | 接收窗口大小，影响下载速度 |
+| `CHECKSUM_*` | `0` 或 `1` | `0`=使用硬件校验和（STM32 等），`1`=软件计算 |
 
 ---
 
@@ -375,97 +377,39 @@ u32_t sys_now(void) { return xTaskGetTickCount() * portTICK_PERIOD_MS; }
 
 ### 7.1 创建 mbedtls_config.h
 
-在你的项目中创建 `mbedtls_config.h`：
+当前捆绑的 mbedTLS 4.x 将 TLS/X.509 配置与 TF-PSA-Crypto 配置分开。先使用当前依赖提供的默认配置验证集成，再按目标平台裁剪。在你的项目中创建 `mbedtls_config.h`：
 
 ```c
-#ifndef MBEDTLS_CONFIG_H
-#define MBEDTLS_CONFIG_H
+#ifndef OPENAI_MBEDTLS_CONFIG_H
+#define OPENAI_MBEDTLS_CONFIG_H
 
-/* 启用 TLS 客户端 */
-#define MBEDTLS_SSL_CLI_C
-#define MBEDTLS_SSL_PROTO_TLS1_2    /* TLS 1.2 — API 服务器要求 */
-#define MBEDTLS_SSL_PROTO_TLS1_3    /* TLS 1.3 — 可选但推荐 */
+/* 复用当前捆绑版本的 TLS/X.509 默认配置。 */
+#include "mbedtls/mbedtls_config.h"
 
-/* 加密套件 */
-#define MBEDTLS_AES_C
-#define MBEDTLS_GCM_C
-#define MBEDTLS_SHA256_C
-#define MBEDTLS_SHA512_C
-#define MBEDTLS_ECP_C
-#define MBEDTLS_ECP_DP_SECP256R1_ENABLED
-#define MBEDTLS_ECP_DP_SECP384R1_ENABLED
-#define MBEDTLS_ECP_DP_SECP521R1_ENABLED
-#define MBEDTLS_RSA_C
-#define MBEDTLS_PKCS1_V15
-#define MBEDTLS_PKCS1_V22
-#define MBEDTLS_KEY_EXCHANGE_ECDHE_RSA
-#define MBEDTLS_KEY_EXCHANGE_ECDHE_ECDSA
-#define MBEDTLS_KEY_EXCHANGE_RSA_PSK
-
-/* X.509 证书验证 */
-#define MBEDTLS_X509_CRT_PARSE_C
-#define MBEDTLS_ASN1_PARSE_C
-#define MBEDTLS_ASN1_WRITE_C
-#define MBEDTLS_PEM_PARSE_C
-#define MBEDTLS_BASE64_C
-
-/* 随机数生成 */
-#define MBEDTLS_CTR_DRBG_C
-#define MBEDTLS_HMAC_DRBG_C
-#define MBEDTLS_ENTROPY_C
-#define MBEDTLS_ENTROPY_HARDWARE_ALT   /* 如有硬件随机数源 */
-/* 如果没有硬件随机数，注释掉上一行并添加： */
-/* #define MBEDTLS_NO_PLATFORM_ENTROPY */
-
-/* 平台 */
-#define MBEDTLS_PLATFORM_C
-#define MBEDTLS_PLATFORM_MEMORY        /* 可选：重定向 malloc/free */
-#define MBEDTLS_TIMING_C
-
-/* 禁用不必要的功能以减小体积 */
-// #define MBEDTLS_SSL_MAX_FRAGMENT_LENGTH  /* 如不需要 */
-// #define MBEDTLS_SSL_ALPN                  /* 不需要 ALPN */
-// #define MBEDTLS_SSL_SERVER_NAME_INDICATION /* 需要！SNI 是 HTTPS 必需的 */
-#define MBEDTLS_SSL_SNI
-
-/* ARM Cortex-M 特殊配置 */
-#ifdef __ARM_ARCH_7M__
-    #define MBEDTLS_HAVE_ASM          /* Cortex-M3 有硬件除法，可启用 */
-#endif
-#ifdef __ARM_ARCH_7E_M__
-    /* Cortex-M4/M7: 如果无 FPU 指令支持，禁用汇编优化 */
-    #undef MBEDTLS_HAVE_ASM
-#endif
-
-#include "mbedtls/check_config.h"
-
-#endif /* MBEDTLS_CONFIG_H */
+#endif /* OPENAI_MBEDTLS_CONFIG_H */
 ```
+
+编译 mbedTLS、lwIP TLS 适配层和应用时，统一定义 `MBEDTLS_CONFIG_FILE="mbedtls_config.h"`，并将此文件所在目录加入头文件搜索路径。默认配置包含 TLS 客户端、TLS 1.2、证书解析及 `MBEDTLS_SSL_SERVER_NAME_INDICATION`，这是集成起点，不是最小 MCU 配置。
+
+加密算法、随机数及平台内存配置位于 `third_party/mbedtls/tf-psa-crypto/include/psa/crypto_config.h`。需要自定义时，使用 `TF_PSA_CRYPTO_CONFIG_FILE` 指向独立配置，并确保库与应用采用相同配置；下一节的硬件熵源选项也在该配置中启用。头文件搜索路径至少包含 `third_party/mbedtls/include`、`third_party/mbedtls/tf-psa-crypto/include` 和 `third_party/mbedtls/tf-psa-crypto/drivers/builtin/include`。
+
+不要手动包含 `mbedtls/check_config.h`：当前版本不提供此公开头文件。应用应通过 `mbedtls/ssl.h` 等公开头文件加载配置；裁剪后的配置需重新编译库并验证目标平台运行。
 
 ### 7.2 提供随机数源
 
-mbedTLS 需要硬件随机数源。在你的平台实现 `mbedtls_hardware_poll()`：
+当前 TF-PSA-Crypto 使用 `MBEDTLS_PSA_BUILTIN_GET_ENTROPY` 选择内置系统熵源；需要自定义硬件熵源时，在独立 PSA 配置中启用 `MBEDTLS_PSA_DRIVER_GET_ENTROPY` 并实现下列回调：
 
 ```c
-#include "mbedtls/entropy.h"
+#include "mbedtls/platform.h"
 
-/* STM32 示例：使用硬件 RNG */
-extern uint32_t HAL_RNG_GetRandomNumber(void *hrng);
-
-int mbedtls_hardware_poll(void *data, unsigned char *output,
-                          size_t len, size_t *olen)
-{
-    for (size_t i = 0; i < len; i += 4) {
-        uint32_t rnd = HAL_RNG_GetRandomNumber(NULL);
-        size_t chunk = (len - i < 4) ? (len - i) : 4;
-        memcpy(output + i, &rnd, chunk);
-    }
-    *olen = len;
-    return 0;
-}
+int mbedtls_platform_get_entropy(psa_driver_get_entropy_flags_t flags,
+                                 size_t *estimate_bits,
+                                 unsigned char *output, size_t output_size);
 ```
 
-> **注意**：如果你禁用 `MBEDTLS_ENTROPY_HARDWARE_ALT` 并启用 `MBEDTLS_NO_PLATFORM_ENTROPY`，mbedTLS 会使用内部伪随机数。这对开发测试足够，但**生产环境应使用硬件随机数**。
+这是接口声明，具体实现由目标平台提供。当前依赖要求填满 output，成功时将 estimate_bits 设为 `8 * output_size`；不支持的 flags 返回 `PSA_ERROR_NOT_SUPPORTED`，熵不可用时返回 `PSA_ERROR_INSUFFICIENT_ENTROPY`，不能用默认数据掩盖失败。
+
+旧的 `mbedtls_hardware_poll()`、`MBEDTLS_ENTROPY_HARDWARE_ALT` 和 `MBEDTLS_NO_PLATFORM_ENTROPY` 已移除；不要包含已不存在的公开头 `mbedtls/entropy.h`。详细接口与配置限制见捆绑依赖的 [TF-PSA-Crypto 迁移指南](third_party/mbedtls/tf-psa-crypto/docs/1.0-migration-guide.md#custom-entropy-collector)。本项目未验证目标板硬件熵源实现。
 
 ---
 
@@ -540,7 +484,7 @@ int mbedtls_hardware_poll(void *data, unsigned char *output,
 python build.py --backend lwip
 
 # 编译全部后端
-python build.py --jobs 10
+python build.py --jobs 12
 
 # 自定义参数
 python build.py --backend lwip --timeout 60 --log-level 3 --no-tls
@@ -569,7 +513,7 @@ git submodule update --init --recursive
 cmake -S . -B build -DOPENAI_HTTP_BACKEND=OPENAI_BACKEND_LWIP -DLWIP_INCLUDE_DIR="third_party/lwip/src/include" -DMBEDTLS_INCLUDE_DIR="third_party/mbedtls"
 
 # 3. 编译
-cmake --build build --parallel 10
+cmake --build build --parallel 12
 
 # 4. 获取输出
 #    libopenai_lwip.a  — lwIP 后端（嵌入式）
@@ -582,6 +526,7 @@ cmake -S . -B build -DOPENAI_HTTP_BACKEND=OPENAI_BACKEND_LWIP -DOPENAI_LOG_ENABL
 ```
 
 `OPENAI_HTTP_BACKEND` 支持三个值：
+
 - `OPENAI_BACKEND_CURL`（默认）— libcurl 后端
 - `OPENAI_BACKEND_LWIP` — lwIP 后端
 - `OPENAI_BACKEND_BOTH` — 同时编译两个后端
@@ -1052,26 +997,26 @@ ESP-IDF 自带 lwIP 和 mbedTLS，**无需使用项目子模块**：
 
 ### 编译错误
 
-| 错误信息                                                   | 原因                 | 解决方案                                                              |
+| 错误信息 | 原因 | 解决方案 |
 | ------------------------------------------------------ | ------------------ | ----------------------------------------------------------------- |
-| `fatal error: lwip/sockets.h: No such file`            | lwIP 头文件路径未添加      | 添加 `third_party/lwip/src/include` 到包含路径                           |
-| `fatal error: mbedtls/ssl.h: No such file`             | mbedTLS 头文件路径未添加   | 添加 `third_party/mbedtls/include` 到包含路径                            |
-| `error: 'LWIP_ALTCP_TLS' undeclared`                   | 编译定义缺失             | 添加 `-DLWIP_ALTCP=1 -DLWIP_ALTCP_TLS=1 -DLWIP_ALTCP_TLS_MBEDTLS=1` |
-| `error: implicit declaration of function 'altcp_read'` | lwIP 2.2.x 已移除此函数  | 确保使用项目自带的 `openai_http_lwip.c`（已内置兼容层）                            |
-| `undefined reference to 'sys_now'`                     | 未实现系统时钟            | 在 `sys_arch.c` 中实现 `sys_now()` 返回毫秒计时                             |
-| `undefined reference to 'gethostbyname'`               | lwIP DNS 未启用       | 确认 `LWIP_DNS=1`，且 `lwip_netdb.c` 已编译                              |
-| `error: strtod undeclared`                             | 嵌入式工具链未提供 `strtod` | 需要提供 `strtod` 实现（newlib-nano 默认包含）                                |
+| `fatal error: lwip/sockets.h: No such file` | lwIP 头文件路径未添加 | 添加 `third_party/lwip/src/include` 到包含路径 |
+| `fatal error: mbedtls/ssl.h: No such file` | mbedTLS 头文件路径未添加 | 添加 `third_party/mbedtls/include` 到包含路径 |
+| `error: 'LWIP_ALTCP_TLS' undeclared` | 编译定义缺失 | 添加 `-DLWIP_ALTCP=1 -DLWIP_ALTCP_TLS=1 -DLWIP_ALTCP_TLS_MBEDTLS=1` |
+| `error: implicit declaration of function 'altcp_read'` | lwIP 2.2.x 已移除此函数 | 确保使用项目自带的 `openai_http_lwip.c`（已内置兼容层） |
+| `undefined reference to 'sys_now'` | 未实现系统时钟 | 在 `sys_arch.c` 中实现 `sys_now()` 返回毫秒计时 |
+| `undefined reference to 'gethostbyname'` | lwIP DNS 未启用 | 确认 `LWIP_DNS=1`，且 `lwip_netdb.c` 已编译 |
+| `error: strtod undeclared` | 嵌入式工具链未提供 `strtod` | 需要提供 `strtod` 实现（newlib-nano 默认包含） |
 
 ### 运行时问题
 
-| 现象                            | 原因                    | 解决方案                               |
+| 现象 | 原因 | 解决方案 |
 | ----------------------------- | --------------------- | ---------------------------------- |
-| `gethostbyname()` 返回空         | DNS 未配置或网络未就绪         | 确认 DNS 服务器 IP 已设置，网络接口已 up         |
-| `connect()` 返回 -1             | TCP 连接失败              | 检查防火墙、TLS 配置、端口 443 是否可达           |
-| HTTPS 连接后无响应                  | mbedTLS 握手失败          | 检查时间戳（TLS 证书验证需要正确时间）              |
-| 响应被截断                         | `Content-Length` 解析错误 | 确认使用最新代码（已修复大小写敏感问题）               |
-| 内存不足（OOM）                     | RAM 不够                | 增大堆或减小 `MEM_SIZE`/`TCP_WND`        |
-| `openai_client_new()` 返回 NULL | 已存在一个客户端实例            | 当前限制为单客户端，先 `openai_client_free()` |
+| `gethostbyname()` 返回空 | DNS 未配置或网络未就绪 | 确认 DNS 服务器 IP 已设置，网络接口已 up |
+| `connect()` 返回 -1 | TCP 连接失败 | 检查防火墙、TLS 配置、端口 443 是否可达 |
+| HTTPS 连接后无响应 | mbedTLS 握手失败 | 检查时间戳（TLS 证书验证需要正确时间） |
+| 响应被截断 | `Content-Length` 解析错误 | 确认使用最新代码（已修复大小写敏感问题） |
+| 内存不足（OOM） | RAM 不够 | 增大堆或减小 `MEM_SIZE`/`TCP_WND` |
+| `openai_client_new()` 返回 NULL | 已存在一个客户端实例 | 当前限制为单客户端，先 `openai_client_free()` |
 
 ### 调试建议
 
@@ -1084,37 +1029,39 @@ ESP-IDF 自带 lwIP 和 mbedTLS，**无需使用项目子模块**：
 
 ## 14. 内存需求估算
 
+本节数值为配置规划估算，未在目标板测量，不是最低可运行保证。实际 Flash、堆峰值与响应长度、编译选项和第三方库配置有关，需在目标工程测量。
+
 ### 静态内存（代码 + 常量）
 
-| 组件                 | Flash 占用估算      |
+| 组件 | Flash 占用估算 |
 | ------------------ | --------------- |
-| openai_client.c    | ~15-20 KB       |
-| openai_json.c      | ~5-8 KB         |
-| openai_http_lwip.c | ~5-8 KB（重构后精简）|
-| lwIP 核心            | ~50-80 KB       |
-| mbedTLS（TLS 客户端）   | ~150-250 KB     |
-| **合计**             | **~225-366 KB** |
+| openai_client.c | ~15-20 KB |
+| openai_json.c | ~5-8 KB |
+| openai_http_lwip.c | ~5-8 KB |
+| lwIP 核心 | ~50-80 KB |
+| mbedTLS（TLS 客户端） | ~150-250 KB |
+| **合计** | **~225-366 KB** |
 
 > 如禁用 TLS（`OPENAI_USE_TLS=0`），可节省 ~150-250 KB Flash。
 
 ### 动态内存（堆）
 
-| 分配项                | 堆用量估算                 |
+| 分配项 | 堆用量估算 |
 | ------------------ | --------------------- |
-| lwIP 栈（`MEM_SIZE`） | 8-32 KB（可配）           |
-| mbedTLS 会话         | 30-60 KB（每连接）         |
-| HTTP 请求缓冲          | 1-4 KB                |
-| HTTP 响应缓冲          | 4-64 KB（流式缓冲有固定上限） |
-| JSON 解析树           | 2-8 KB                |
-| openai 响应结构        | 1-4 KB                |
-| **合计（单次请求）**       | **~50-120 KB**        |
+| lwIP 栈（`MEM_SIZE`） | 8-32 KB（可配） |
+| mbedTLS 会话 | 30-60 KB（每连接） |
+| HTTP 请求缓冲 | 1-4 KB |
+| HTTP 响应缓冲 | 4-64 KB（流式缓冲有固定上限） |
+| JSON 解析树 | 2-8 KB |
+| openai 响应结构 | 1-4 KB |
+| **合计（单次请求）** | **~50-120 KB** |
 
-### 最低 RAM 要求
+### RAM 配置估算
 
-| 配置             | 最低 RAM | 推荐 RAM |
+| 配置 | 起步估算 | 规划估算 |
 | -------------- | ------ | ------ |
-| HTTP（无 TLS）    | 40 KB  | 64 KB  |
-| HTTPS（mbedTLS） | 80 KB  | 128 KB |
+| HTTP（无 TLS） | 40 KB | 64 KB |
+| HTTPS（mbedTLS） | 80 KB | 128 KB |
 | HTTPS + RTOS 栈 | 100 KB | 160 KB |
 
 ---
@@ -1127,8 +1074,8 @@ ESP-IDF 自带 lwIP 和 mbedTLS，**无需使用项目子模块**：
 4. **流式行长度限制** — 单条未结束的 SSE 行最大为 64 KiB，超过限制会返回错误
 5. **无重试机制** — 请求失败不会自动重试
 6. **无代理支持** — lwIP 后端不支持 HTTP 代理
-7. **DNS 无缓存** — 每次请求都做 DNS 查询
-8. **TLS 证书验证** — 默认跳过证书验证（`OPENAI_USE_TLS=1` 启用 TLS，证书验证由 mbedTLS 配置控制）
+7. **DNS 查询** — 每次连接调用解析接口；缓存行为由目标 lwIP 配置决定
+8. **TLS 证书配置** — 当前后端调用 `altcp_tls_create_config_client(NULL, 0)`，未传入 CA；启用 TLS 本身不等于完成服务器证书验证，目标集成需确认实际行为
 
 ---
 
@@ -1138,7 +1085,7 @@ ESP-IDF 自带 lwIP 和 mbedTLS，**无需使用项目子模块**：
 方法一：独立编译（推荐）
 □ 1. git submodule update --init --recursive
 □ 2. cmake -S . -B build -DOPENAI_HTTP_BACKEND=OPENAI_BACKEND_LWIP -DLWIP_INCLUDE_DIR="..." -DMBEDTLS_INCLUDE_DIR="..."
-□ 3. cmake --build build --parallel 10
+□ 3. cmake --build build --parallel 12
 □ 4. 获取 libopenai_lwip.a，合并到你的工程
 □ 5. 确保网络已初始化（参考第 10 节）
 □ 6. 链接 openai_lwip + lwip + mbedtls 静态库

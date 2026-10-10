@@ -7,7 +7,7 @@
  * - Streaming responses (SSE)
  * - Embeddings
  *
- * @version 1.0.0
+ * @version 0.0.3
  */
 
 #ifndef OPENAI_H

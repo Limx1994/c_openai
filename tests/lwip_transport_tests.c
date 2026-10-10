@@ -17,6 +17,7 @@ static int s_connect_fails;
 static int s_recv_calls;
 static int s_close_calls;
 static int s_failures;
+static char s_request_header[2048];
 
 static void reset_transport(const char* response, size_t max_fragment) {
     s_response = (const unsigned char*)response;
@@ -27,6 +28,7 @@ static void reset_transport(const char* response, size_t max_fragment) {
     s_connect_fails = 0;
     s_recv_calls = 0;
     s_close_calls = 0;
+    s_request_header[0] = '\0';
     errno = 0;
 }
 
@@ -77,8 +79,14 @@ struct hostent* lwip_gethostbyname(const char* name) {
 
 ssize_t lwip_send(int socket_fd, const void* buffer, size_t size, int flags) {
     (void)socket_fd;
-    (void)buffer;
     (void)flags;
+    if (!s_request_header[0]) {
+        check(size < sizeof(s_request_header), "request header must fit test capture");
+        if (size < sizeof(s_request_header)) {
+            memcpy(s_request_header, buffer, size);
+            s_request_header[size] = '\0';
+        }
+    }
     return (ssize_t)size;
 }
 
@@ -165,6 +173,35 @@ static void test_chunk_extensions_and_trailers(void) {
     check(s_close_calls == 1, "trailer response must close fd 0 exactly once");
 }
 
+static void test_anthropic_header(void) {
+    static const char response[] =
+        "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}";
+    OpenAI_HTTPRequest req = {0};
+    req.url = "http://example.test/v1/messages";
+    req.method = "POST";
+    req.body = "{}";
+    req.body_size = 2;
+    req.auth_header = "test-key";
+    req.auth_mode = 1;
+    req.extra_headers = "anthropic-version: 2023-06-01\r\n";
+
+    reset_transport(response, 0);
+    OpenAI_HTTPResponse* resp = openai_http_request(&req);
+    check(resp != NULL, "Anthropic header with trailing CRLF must be accepted");
+    check(strstr(s_request_header,
+          "anthropic-version: 2023-06-01\r\nContent-Length: 2\r\n") != NULL,
+          "version and content length must remain separate header lines");
+    openai_http_response_free(resp);
+
+    reset_transport(response, 0);
+    int status_code = 0;
+    OpenAI_HTTPStream* stream = openai_http_stream_open(&req, &status_code);
+    check(stream != NULL && status_code == 200, "Anthropic streaming header must work");
+    check(strstr(s_request_header, "anthropic-version: 2023-06-01\r\n") != NULL,
+          "streaming request must retain the version header");
+    openai_http_stream_close(stream);
+}
+
 static void test_receive_timeout(void) {
     reset_transport(NULL, 0);
     s_timeout_on_read = 1;
@@ -188,6 +225,7 @@ static void test_connect_failure_closes_fd_zero(void) {
 int main(void) {
     test_chunked_one_byte_fragments();
     test_chunk_extensions_and_trailers();
+    test_anthropic_header();
     test_receive_timeout();
     test_connect_failure_closes_fd_zero();
     if (s_failures != 0) {

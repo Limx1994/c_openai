@@ -218,6 +218,10 @@ static char* build_chat_request_body(OpenAI_ChatRequest* req) {
         free(escaped_role);
     }
 
+    /* Close messages before adding top-level optional parameters. */
+    buf[offset++] = ']';
+    buf[offset] = '\0';
+
     /* Add optional parameters */
     if (req->temperature >= 0.0f) {
         char temp_buf[128];
@@ -294,12 +298,12 @@ static char* build_chat_request_body(OpenAI_ChatRequest* req) {
         free(escaped_stop);
     }
 
-    /* Close messages array and object.
+    /* Close object.
        Only include "stream":true for streaming requests; omit "stream" entirely
        for non-streaming since false is the API default. */
-    size_t closing_len = strlen("]}");
+    size_t closing_len = strlen("}");
     if (req->stream) {
-        closing_len = strlen("],\"stream\":true}");
+        closing_len = strlen(",\"stream\":true}");
     }
     while (offset + closing_len >= buf_size - 1) {
         buf_size *= 2;
@@ -312,9 +316,9 @@ static char* build_chat_request_body(OpenAI_ChatRequest* req) {
     }
 
     if (req->stream) {
-        snprintf(buf + offset, buf_size - offset, "],\"stream\":true}");
+        snprintf(buf + offset, buf_size - offset, ",\"stream\":true}");
     } else {
-        snprintf(buf + offset, buf_size - offset, "]}");
+        snprintf(buf + offset, buf_size - offset, "}");
     }
 
     return buf;
@@ -1793,7 +1797,7 @@ int openai_stream_read(void* stream, OpenAI_StreamEvent* event) {
                             return 0;
                         }
 
-                        /* All block types: clear state and return event */
+                        /* Consume text/thinking stops without emitting an empty event. */
                         handle->parse_pos = line_end + 1;
                         if (handle->parse_pos < handle->buffer_size &&
                             (handle->buffer[handle->parse_pos] == '\n' || handle->buffer[handle->parse_pos] == '\r')) {
@@ -1805,7 +1809,7 @@ int openai_stream_read(void* stream, OpenAI_StreamEvent* event) {
                         handle->current_tool_id = NULL;
                         handle->current_block_type[0] = '\0';
                         handle->current_index = -1;
-                        return 0;
+                        continue;
                     }
                 }
                 /* Skip empty lines and non-data lines for Anthropic */

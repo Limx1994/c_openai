@@ -6,16 +6,17 @@
 #include "openai_http.h"
 #include "openai_config.h"
 
-/* Append extra_headers (raw \r\n-delimited) to a curl_slist.
+/* Append an extra header with an optional trailing CRLF to a curl_slist.
    Returns the (possibly NULL) list on success, or NULL on allocation failure
    or if extra_headers contains bare CRLF (header injection protection). */
 static struct curl_slist* append_extra_headers(struct curl_slist* list, const char* extra_headers)
 {
     if (!extra_headers) return list;
 
-    /* Reject bare CRLF to prevent HTTP header injection */
+    /* Accept the line terminator, but reject embedded CR/LF. */
     const char* p = extra_headers;
     while (*p) {
+        if (*p == '\r' && p[1] == '\n' && p[2] == '\0') break;
         if (*p == '\r' || *p == '\n') {
             if (list) curl_slist_free_all(list);
             return NULL;
@@ -23,8 +24,20 @@ static struct curl_slist* append_extra_headers(struct curl_slist* list, const ch
         p++;
     }
 
-    list = curl_slist_append(list, extra_headers);
-    return list;
+    if (!*p) return curl_slist_append(list, extra_headers);
+
+    size_t length = (size_t)(p - extra_headers);
+    char* header = (char*)malloc(length + 1);
+    if (!header) {
+        if (list) curl_slist_free_all(list);
+        return NULL;
+    }
+    memcpy(header, extra_headers, length);
+    header[length] = '\0';
+    struct curl_slist* updated = curl_slist_append(list, header);
+    free(header);
+    if (!updated && list) curl_slist_free_all(list);
+    return updated;
 }
 
 static int curl_init_count = 0;
