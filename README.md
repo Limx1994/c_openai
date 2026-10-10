@@ -468,25 +468,6 @@ cmake --build build --parallel 12
 
 ## 许可证
 
-CC BY-NC 4.0（Creative Commons 署名-非商业性使用 4.0 国际许可证）
+本项目采用 **PolyForm Noncommercial License 1.0.0 及 LICENSE 中的附加条款**。附加条款包含非商业限制和黑名单禁用要求，完整内容以 [LICENSE](LICENSE) 为准。
 
-本项目采用 Creative Commons 署名-非商业性使用 4.0 国际许可证授权。
-您可以将本软件用于**非商业目的**。
-
-**允许**：
-
-- ✅ 复制和分享本作品
-- ✅ 修改和演绎本作品
-
-**要求**：
-
-- 📋 署名：必须注明原作者
-
-**禁止**：
-
-- ❌ 任何形式的商业使用
-
-如需商业使用，请联系作者获取单独授权。
-
-完整许可证内容请参阅 [LICENSE](LICENSE) 文件或访问：
-<https://creativecommons.org/licenses/by-nc/4.0/deed.zh-hans>
+第三方依赖保留各自许可证；本项目许可证替换不修改第三方授权文件。

@@ -2,6 +2,12 @@
 
 记录本项目可核实的版本变更。格式参考 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)，版本采用 [Semantic Versioning](https://semver.org/spec/v2.0.0.html)。历史条目保留原发布日期；它们不是本版本全库审查或运行验证的证明。
 
+## 未发布
+
+### 授权文件
+
+- 按版权所有者提供的文件原样替换 LICENSE 为 PolyForm Noncommercial License 1.0.0 及附加条款，同步 README 和开发规范。第三方授权文件及历史发布标签保持不变。
+
 ## [0.0.3] - 2026-10-10
 
 ### 修复

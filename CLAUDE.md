@@ -199,15 +199,9 @@ OpenAI_ChatResponse* resp = openai_chat_create(client, &req);
 
 ## 许可证
 
-本项目采用 **CC BY-NC 4.0**（Creative Commons 署名-非商业性使用 4.0 国际许可证）授权。
+本项目采用 **PolyForm Noncommercial License 1.0.0 及 LICENSE 中的附加条款**，包含非商业限制和黑名单禁用要求。完整条款见 [LICENSE](LICENSE)，不得在文档中简化为标准 PolyForm 授权或继续使用旧 CC BY-NC 说明。
 
-**关键条款**：
-
-- ✅ 允许：复制、分享、修改本作品
-- 📋 要求：必须注明原作者
-- 🚫 禁止：商业使用
-
-完整许可证内容请参阅 [LICENSE](LICENSE) 文件。
+第三方库继续遵循各自许可证，不随本项目许可证替换而改变。
 
 ## 验证方法
 
